@@ -135,7 +135,7 @@ func decodeSite(m map[string]any) *Site {
 }
 
 // SiteUpdate is a change to the site configuration. Nil fields are left as
-// they are. These are the writable options; the guest network limits
+// they are. The guest network limits
 // are changed with wifi.UpdateGuest.
 type SiteUpdate struct {
 	// ZoneName is an IANA zone such as "America/Chicago".

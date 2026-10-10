@@ -1,6 +1,5 @@
 // Package amplifi controls Ubiquiti AmpliFi routers and mesh points over their
-// local control protocol.
-// No cloud account is involved.
+// local control protocol. No cloud account is involved.
 //
 // A unit is any AmpliFi box. The router is the unit connected to the
 // internet; mesh points are the others.

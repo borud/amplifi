@@ -16,8 +16,8 @@ import (
 // DecodeMsgpack decodes a msgpack payload into plain Go values. Maps become
 // map[string]any whatever their key type: integer option codes become their
 // decimal string ("1"), and binary keys (such as the 6 byte MACs keying a peer
-// list) become a string of the raw bytes. Go maps cannot have
-// []byte keys.
+// list) become a string of the raw bytes, since Go maps cannot have []byte
+// keys.
 func DecodeMsgpack(b []byte) (any, error) {
 	v, err := decode(msgpack.NewDecoder(bytes.NewReader(b)))
 	if err != nil {
@@ -179,7 +179,8 @@ func encodeKey(e *msgpack.Encoder, k string) error {
 // distributedLastUpdateTimestamp is DistributedConfigOption.LastUpdateTimestamp.
 const distributedLastUpdateTimestamp = "2"
 
-// ClusterNodeArg wraps a ClusterNode setter payload as [{LastUpdateTimestamp: now in µs}, payload].
+// ClusterNodeArg wraps a ClusterNode setter payload as
+// [{LastUpdateTimestamp: now in µs}, payload].
 func ClusterNodeArg(payload any) ([]byte, error) {
 	return EncodeMsgpack([]any{
 		map[string]any{distributedLastUpdateTimestamp: time.Now().UnixMicro()},

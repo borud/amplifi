@@ -19,8 +19,7 @@ import (
 	"github.com/borud/amplifi/internal/wire"
 )
 
-// Option codes of a GetWifiClientInfo client entry
-//. Codes 7-14 are byte counts
+// Option codes of a GetWifiClientInfo client entry. Codes 7-14 are byte counts
 // over 5 to 60 second windows and are left out.
 const (
 	wifiMode        = "2"

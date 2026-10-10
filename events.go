@@ -10,7 +10,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// pingInterval is the WebSocket keepalive interval.
+// pingInterval is how often the client pings the unit to keep the session
+// alive.
 const pingInterval = 10 * time.Second
 
 // pongWait is how long Events waits for any frame, pong or message, before

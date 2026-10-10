@@ -19,8 +19,7 @@ var (
 	// BandNames maps WifiBand codes.
 	BandNames = map[string]string{"1": "2.4GHz", "2": "5GHz"}
 
-	// NetworkNames maps WifiInterfaceRole codes. 7 is the friend
-	// network.
+	// NetworkNames maps WifiInterfaceRole codes.
 	NetworkNames = map[string]string{
 		"1": "setup", "2": "internal", "3": "main", "4": "guest",
 		"5": "device", "6": "relay", "7": "friend", "8": "iot",

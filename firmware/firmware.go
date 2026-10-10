@@ -37,8 +37,7 @@ const (
 	CodeCheckError     StatusCode = 128
 )
 
-// State is the phase of a mesh-wide firmware check or upgrade
-//.
+// State is the phase of a mesh-wide firmware check or upgrade.
 type State string
 
 // Firmware update states.

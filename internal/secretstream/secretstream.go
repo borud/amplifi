@@ -1,6 +1,5 @@
 // Package secretstream frames and encrypts AmpliFi control messages with
-// crypto_secretstream_xchacha20poly1305, byte-compatible with
-// libsodium.
+// crypto_secretstream_xchacha20poly1305, byte-compatible with libsodium.
 package secretstream
 
 import (

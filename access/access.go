@@ -1,5 +1,4 @@
-// Package access manages scheduled access control (parental
-// controls).
+// Package access manages scheduled access control (parental controls).
 //
 // The router keeps three tables, each a JSON object keyed by ID: profiles (a
 // named group of client MACs that can be paused), clients (per-client

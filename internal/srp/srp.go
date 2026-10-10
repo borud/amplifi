@@ -1,6 +1,6 @@
 // Package srp implements the client side of the AmpliFi SRP-6a login: the RFC
-// 5054 2048-bit group with SHA-256 and AmpliFi's own x,
-// client-evidence and server-evidence routines.
+// 5054 2048-bit group with SHA-256 and AmpliFi's own x, client-evidence and
+// server-evidence routines.
 package srp
 
 import (
@@ -14,10 +14,8 @@ import (
 	"golang.org/x/crypto/pbkdf2"
 )
 
-// SRP-6a parameters. The router uses the RFC 5054 2048-bit group with SHA-256 and the fixed
-// username
-// "admin". The X, client-evidence and server-evidence routines are AmpliFi's
-// own variants.
+// SRP-6a parameters: the RFC 5054 2048-bit group with SHA-256 and the fixed
+// username "admin".
 const (
 	// User is the fixed SRP username the router expects.
 	User              = "admin"
@@ -55,7 +53,8 @@ func Step(password string, salt, b *big.Int) (*Result, error) {
 }
 
 // StepX is Step with a precomputed x. A router's salt is fixed, so x is
-// constant for a given router and password, and can stand in for the password. salt must still be the
+// constant for a given router and password, and can stand in for the
+// password. salt must still be the
 // one from the challenge since it feeds the client evidence.
 func StepX(x, salt, b *big.Int) (*Result, error) {
 	a, err := randExp()
@@ -129,7 +128,7 @@ func serverEvidence(a, m1, s *big.Int) *big.Int {
 	return new(big.Int).SetBytes(sha256Sum(unsigned(a), unsigned(m1), hs))
 }
 
-// sessionKey returns the secretstream key: the raw 32 byte H(S). There is no
+// sessionKey returns the secretstream key: the raw 32 byte H(S), with no
 // sign byte.
 func sessionKey(hs []byte) []byte {
 	return hs[:32]
@@ -148,12 +147,11 @@ func randExp() (*big.Int, error) {
 }
 
 // unsigned returns the minimal big-endian unsigned encoding of x. The x,
-// client-evidence and server-evidence routines all use this (unpadded) form.
+// client-evidence and server-evidence routines use this unpadded form.
 func unsigned(x *big.Int) []byte { return x.Bytes() }
 
-// padN left-pads x with zeros to the byte length of N. The k and u values use
-// the standard routines, which pad both
-// operands to the modulus length before hashing. The custom evidence routines
+// padN left-pads x with zeros to the byte length of N. The k and u values pad
+// both operands to the modulus length before hashing; the evidence routines
 // do not pad.
 func padN(x *big.Int) []byte {
 	l := (n.BitLen() + 7) / 8

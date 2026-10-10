@@ -66,7 +66,7 @@ func Peers(ctx context.Context, c *amplifi.Client) ([]Peer, error) {
 	return peers, nil
 }
 
-// Band and RSSI (dBm) for a peer entry that omits them, used as defaults.
+// Band and RSSI (dBm) assumed for a peer entry that omits them.
 const (
 	defaultPeerBand = "5GHz"
 	defaultPeerRSSI = -50
@@ -359,8 +359,7 @@ func FactoryReset(ctx context.Context, c *amplifi.Client, mac amplifi.MAC) error
 	return nil
 }
 
-// macArray packs MACs as a msgpack array of binaries
-//.
+// macArray packs MACs as a msgpack array of binaries.
 func macArray(macs []amplifi.MAC) []any {
 	a := make([]any, 0, len(macs))
 	for _, m := range macs {
