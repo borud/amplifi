@@ -8,7 +8,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"net"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -59,9 +59,9 @@ type Client struct {
 	Name string `json:"name"`
 
 	// Description is the name set by the user.
-	Description string `json:"description,omitempty"`
-	HostName    string `json:"host_name,omitempty"`
-	IP          net.IP `json:"ip,omitempty"`
+	Description string     `json:"description,omitempty"`
+	HostName    string     `json:"host_name,omitempty"`
+	IP          netip.Addr `json:"ip,omitzero"`
 
 	// Connection is "wired", "2.4GHz", "5GHz", "wifi" or the router's value.
 	Connection string `json:"connection,omitempty"`
@@ -72,48 +72,50 @@ type Client struct {
 	// Network is the Wi-Fi network: main, guest, iot, ...
 	Network string `json:"network,omitempty"`
 
-	// Node is the mesh point the client is attached to; nil for the router.
-	Node     amplifi.MAC `json:"node,omitempty"`
-	NodeName string      `json:"node_name,omitempty"`
+	// Unit is the mesh point the client is attached to; nil for the router.
+	Unit     amplifi.MAC `json:"unit,omitempty"`
+	UnitName string      `json:"unit_name,omitempty"`
 
 	// IconID is the fingerprint device ID.
-	IconID int64 `json:"icon_id,omitempty"`
-	Online bool  `json:"online"`
+	IconID int  `json:"icon_id,omitempty"`
+	Online bool `json:"online"`
 
 	// LastSeen and TimesSeen are only set in History.
 	LastSeen  time.Time `json:"last_seen,omitzero"`
-	TimesSeen int64     `json:"times_seen,omitempty"`
+	TimesSeen int       `json:"times_seen,omitempty"`
 
-	Wifi   *WifiClient    `json:"wifi,omitempty"`
+	WiFi   *Association   `json:"wifi,omitempty"`
 	Custom map[string]any `json:"custom,omitempty"`
 	Fields map[string]any `json:"fields,omitempty"`
 }
 
-// WifiClient is one client's Wi-Fi association as reported by
-// GetWifiClientInfo. Bitrates are in Mbit/s. Signal is the router's signal
-// quality figure; its scale is unknown.
-type WifiClient struct {
+// Association is one client's Wi-Fi association as reported by
+// GetWifiClientInfo. Signal is the router's signal quality figure; its scale
+// is unknown. RxBitrate, TxBitrate, Inactive and LeaseValidity are the
+// router's raw values and their units are unconfirmed; bitrates such as
+// 866700 for an 866.7 Mbit/s link suggest kbit/s.
+type Association struct {
 	MAC            amplifi.MAC `json:"mac"`
-	Node           amplifi.MAC `json:"node,omitempty"`
+	Unit           amplifi.MAC `json:"unit,omitempty"`
 	Band           string      `json:"band"`
 	Network        string      `json:"network"`
 	Mode           string      `json:"mode,omitempty"`
 	RadioMode      string      `json:"radio_mode,omitempty"`
-	Signal         int64       `json:"signal"`
-	Inactive       int64       `json:"inactive"`
+	Signal         int         `json:"signal"`
+	Inactive       int         `json:"inactive"`
 	RxBytes        int64       `json:"rx_bytes"`
 	TxBytes        int64       `json:"tx_bytes"`
-	RxBitrate      int64       `json:"rx_bitrate"`
-	TxBitrate      int64       `json:"tx_bitrate"`
-	RxMCS          int64       `json:"rx_mcs"`
-	TxMCS          int64       `json:"tx_mcs"`
-	RxMHz          int64       `json:"rx_mhz"`
-	TxMHz          int64       `json:"tx_mhz"`
-	SpatialStreams int64       `json:"spatial_streams"`
-	MaxBandwidth   int64       `json:"max_bandwidth"`
-	Happiness      int64       `json:"happiness"`
-	IP             net.IP      `json:"ip,omitempty"`
-	LeaseValidity  int64       `json:"lease_validity"`
+	RxBitrate      int         `json:"rx_bitrate"`
+	TxBitrate      int         `json:"tx_bitrate"`
+	RxMCS          int         `json:"rx_mcs"`
+	TxMCS          int         `json:"tx_mcs"`
+	RxMHz          int         `json:"rx_mhz"`
+	TxMHz          int         `json:"tx_mhz"`
+	SpatialStreams int         `json:"spatial_streams"`
+	MaxBandwidth   int         `json:"max_bandwidth"`
+	Happiness      int         `json:"happiness"`
+	IP             netip.Addr  `json:"ip,omitzero"`
+	LeaseValidity  int         `json:"lease_validity"`
 	HostName       string      `json:"host_name,omitempty"`
 	Description    string      `json:"description,omitempty"`
 }
@@ -121,22 +123,22 @@ type WifiClient struct {
 // Signal is one Wi-Fi client's signal quality.
 type Signal struct {
 	MAC      amplifi.MAC `json:"mac"`
-	Node     amplifi.MAC `json:"node,omitempty"`
+	Unit     amplifi.MAC `json:"unit,omitempty"`
 	Band     string      `json:"band"`
 	Network  string      `json:"network"`
-	NodeName string      `json:"node_name,omitempty"`
-	Quality  int64       `json:"quality"`
+	UnitName string      `json:"unit_name,omitempty"`
+	Quality  int         `json:"quality"`
 }
 
-// WifiCount is the number of Wi-Fi clients by band and by network.
-type WifiCount struct {
+// Counts is the number of Wi-Fi clients by band and by network.
+type Counts struct {
 	ByBand    map[string]int `json:"by_band"`
 	ByNetwork map[string]int `json:"by_network"`
 	Total     int            `json:"total"`
 }
 
 // List lists the clients known to the mesh (ClusterNode.GetClientInfo),
-// enriched with custom info, Wi-Fi details and node names when the router
+// enriched with custom info, Wi-Fi details and unit names when the router
 // provides them. Wi-Fi clients missing from the client list are included.
 // The result is sorted by name, then MAC.
 func List(ctx context.Context, c *amplifi.Client) ([]Client, error) {
@@ -145,26 +147,26 @@ func List(ctx context.Context, c *amplifi.Client) ([]Client, error) {
 		return nil, fmt.Errorf("client list: %w", err)
 	}
 
-	custom, err := CustomInfo(ctx, c, nil)
+	custom, err := customInfo(ctx, c)
 	if err != nil && !amplifi.IsRouterError(err) {
 		return nil, fmt.Errorf("client list: %w", err)
 	}
-	wifi, err := Wifi(ctx, c)
+	assocs, err := Associations(ctx, c)
 	if err != nil && !amplifi.IsRouterError(err) {
 		return nil, fmt.Errorf("client list: %w", err)
 	}
-	nodes, err := nodeNames(ctx, c)
+	units, err := unitNames(ctx, c)
 	if err != nil {
 		return nil, fmt.Errorf("client list: %w", err)
 	}
 
-	return current(info, custom, wifi, nodes), nil
+	return current(info, custom, assocs, units), nil
 }
 
 // History lists clients the mesh has seen before
 // (ClusterNode.GetHistoricClientInfo), sorted by name, then MAC. Clients in
 // the current client list are marked online. History entries do not say
-// which node a client used, so Node and NodeName stay empty.
+// which unit a client used, so Unit and UnitName stay empty.
 func History(ctx context.Context, c *amplifi.Client) ([]Client, error) {
 	info, err := clientInfo(ctx, c, "GetHistoricClientInfo")
 	if err != nil {
@@ -178,17 +180,17 @@ func History(ctx context.Context, c *amplifi.Client) ([]Client, error) {
 	return history(info, online), nil
 }
 
-// Wifi lists the Wi-Fi associations on every network and band. It asks
-// ClusterNode.GetWifiClientInfo, which covers the whole mesh and names each
-// client's node, and falls back to Device.GetWifiClientInfo (this unit only)
-// if the unit refuses.
-func Wifi(ctx context.Context, c *amplifi.Client) ([]WifiClient, error) {
+// Associations lists the Wi-Fi associations on every network and band. It
+// asks ClusterNode.GetWifiClientInfo, which covers the whole mesh and names
+// each client's unit, and falls back to Device.GetWifiClientInfo (this unit
+// only) if the unit refuses.
+func Associations(ctx context.Context, c *amplifi.Client) ([]Association, error) {
 	// [nil, nil] asks for every network on every band.
 	m, err := meshOrDevice(ctx, c, "GetWifiClientInfo", rpc.TwoNulls)
 	if err != nil {
 		return nil, fmt.Errorf("wifi clients: %w", err)
 	}
-	return parseWifi(m), nil
+	return parseAssociations(m), nil
 }
 
 // Signals reports the signal quality of every Wi-Fi client. It asks
@@ -200,26 +202,26 @@ func Signals(ctx context.Context, c *amplifi.Client) ([]Signal, error) {
 		return nil, fmt.Errorf("client signals: %w", err)
 	}
 
-	nodes, err := nodeNames(ctx, c)
+	units, err := unitNames(ctx, c)
 	if err != nil {
 		return nil, fmt.Errorf("client signals: %w", err)
 	}
 	signals := parseSignals(m)
 	for i, s := range signals {
-		signals[i].NodeName = nodeName(nodes, s.Node)
+		signals[i].UnitName = unitName(units, s.Unit)
 	}
 	return signals, nil
 }
 
 // Count counts the Wi-Fi clients connected to the unit, leaving out mesh
 // backhaul and setup networks.
-func Count(ctx context.Context, c *amplifi.Client) (*WifiCount, error) {
+func Count(ctx context.Context, c *amplifi.Client) (*Counts, error) {
 	m, err := rpc.Map(ctx, c, amplifi.IfaceDevice, "GetWifiClientCount", rpc.Null)
 	if err != nil {
 		return nil, fmt.Errorf("client count: %w", err)
 	}
 
-	wc := &WifiCount{ByBand: map[string]int{}, ByNetwork: map[string]int{}}
+	wc := &Counts{ByBand: map[string]int{}, ByNetwork: map[string]int{}}
 	for _, p := range descend([]path{{v: m}}, 2) {
 		band, role := p.keys[0], p.keys[1]
 		if !rpc.ClientNetworks[role] {
@@ -233,25 +235,19 @@ func Count(ctx context.Context, c *amplifi.Client) (*WifiCount, error) {
 	return wc, nil
 }
 
-// CustomInfo returns the custom settings saved for clients
-// (ClusterNode.GetClientCustomInfo), keyed by lowercase MAC. With mac set,
-// only that client is asked for.
-func CustomInfo(ctx context.Context, c *amplifi.Client, mac amplifi.MAC) (map[string]map[string]any, error) {
-	arg := map[string]any{}
-	if len(mac) > 0 {
-		arg["mac"] = mac.String()
-	}
-	v, err := c.CallJSON(ctx, amplifi.IfaceClusterNode, "GetClientCustomInfo", arg)
+// customInfo returns the custom settings saved for clients
+// (ClusterNode.GetClientCustomInfo), keyed by lowercase MAC.
+func customInfo(ctx context.Context, c *amplifi.Client) (map[string]map[string]any, error) {
+	v, err := c.CallJSON(ctx, amplifi.IfaceClusterNode, "GetClientCustomInfo", map[string]any{})
 	if err != nil {
 		return nil, fmt.Errorf("client custom info: %w", err)
 	}
 	return entryMap("GetClientCustomInfo", v)
 }
 
-// SetCustomInfo stores custom settings for one client
-// (ClusterNode.SetClientCustomInfo with {mac: entry}). Keys are passed
-// through as given.
-func SetCustomInfo(ctx context.Context, c *amplifi.Client, mac amplifi.MAC, entry map[string]any) error {
+// setCustomInfo stores custom settings for one client
+// (ClusterNode.SetClientCustomInfo with {mac: entry}).
+func setCustomInfo(ctx context.Context, c *amplifi.Client, mac amplifi.MAC, entry map[string]any) error {
 	v, err := c.CallJSON(ctx, amplifi.IfaceClusterNode, "SetClientCustomInfo", map[string]any{mac.String(): entry})
 	if err != nil {
 		return fmt.Errorf("set client custom info: %w", err)
@@ -263,12 +259,12 @@ func SetCustomInfo(ctx context.Context, c *amplifi.Client, mac amplifi.MAC, entr
 // "description" in GetClientInfo, so this sends {"description": name}
 // through SetClientCustomInfo. This is untested.
 func Rename(ctx context.Context, c *amplifi.Client, mac amplifi.MAC, name string) error {
-	return SetCustomInfo(ctx, c, mac, map[string]any{"description": name})
+	return setCustomInfo(ctx, c, mac, map[string]any{"description": name})
 }
 
-// Pause blocks (paused true) or restores a client's internet access
+// SetPaused blocks (paused true) or restores a client's internet access
 // (ClusterNode.SetWanClientPause).
-func Pause(ctx context.Context, c *amplifi.Client, mac amplifi.MAC, paused bool) error {
+func SetPaused(ctx context.Context, c *amplifi.Client, mac amplifi.MAC, paused bool) error {
 	v, err := c.CallJSON(ctx, amplifi.IfaceClusterNode, "SetWanClientPause", map[string]any{
 		"mac":   mac.String(),
 		"pause": paused,
@@ -318,11 +314,11 @@ func meshOrDevice(ctx context.Context, c *amplifi.Client, method string, arg any
 	return m, err
 }
 
-// nodeNames names the mesh points by MAC from ClusterNode.GetPeerList, whose
+// unitNames names the mesh points by MAC from ClusterNode.GetPeerList, whose
 // entries are [name, role, ...] keyed by binary MAC. The router is not among
 // the peers; its name is stored under the empty key. Both lookups are best
 // effort.
-func nodeNames(ctx context.Context, c *amplifi.Client) (map[string]string, error) {
+func unitNames(ctx context.Context, c *amplifi.Client) (map[string]string, error) {
 	names := map[string]string{}
 
 	peers, err := rpc.Map(ctx, c, amplifi.IfaceClusterNode, "GetPeerList", nil)
@@ -346,13 +342,13 @@ func nodeNames(ctx context.Context, c *amplifi.Client) (map[string]string, error
 	return names, nil
 }
 
-// nodeName names a mesh point: a peer by its name, anything else (including
+// unitName names a mesh point: a peer by its name, anything else (including
 // no MAC) as the router.
-func nodeName(nodes map[string]string, node amplifi.MAC) string {
-	if name, ok := nodes[node.String()]; ok && len(node) > 0 {
+func unitName(units map[string]string, unit amplifi.MAC) string {
+	if name, ok := units[unit.String()]; ok && len(unit) > 0 {
 		return name
 	}
-	return nodes[""]
+	return units[""]
 }
 
 // clientInfo fetches a ClientInfo2List-shaped JSON value: an object of
@@ -405,18 +401,18 @@ func history(info, online map[string]map[string]any) []Client {
 }
 
 // current combines the current client list with custom info, Wi-Fi
-// associations and node names (see nodeNames) into one sorted list. Every
+// associations and unit names (see unitNames) into one sorted list. Every
 // client list entry is kept and online; Wi-Fi data only adds to it, and
 // Wi-Fi clients missing from the list are appended.
-func current(info, custom map[string]map[string]any, wifi []WifiClient, nodes map[string]string) []Client {
+func current(info, custom map[string]map[string]any, assocs []Association, units map[string]string) []Client {
 	set := decodeInfo(info)
 	for _, nc := range set.byMAC {
 		nc.Online = true
 	}
-	for _, w := range wifi {
-		applyWifi(set.add(w.MAC.String(), w.MAC), w, nodes)
+	for _, a := range assocs {
+		applyAssociation(set.add(a.MAC.String(), a.MAC), a, units)
 	}
-	return set.list(custom, nodes)
+	return set.list(custom, units)
 }
 
 // clientSet is clients keyed by MAC, in the order they were added.
@@ -449,16 +445,16 @@ func (s *clientSet) add(key string, mac amplifi.MAC) *Client {
 	return nc
 }
 
-// list returns the clients with custom info and node names filled in, sorted
+// list returns the clients with custom info and unit names filled in, sorted
 // by name, then MAC.
-func (s *clientSet) list(custom map[string]map[string]any, nodes map[string]string) []Client {
+func (s *clientSet) list(custom map[string]map[string]any, units map[string]string) []Client {
 	out := make([]Client, 0, len(s.order))
 	for _, key := range s.order {
 		nc := s.byMAC[key]
 		if entry, ok := lookup(custom, key); ok && nc.Custom == nil {
 			nc.Custom = entry
 		}
-		nc.NodeName = nodeName(nodes, nc.Node)
+		nc.UnitName = unitName(units, nc.Unit)
 		nc.Name = cmp.Or(nc.Description, nc.HostName, key)
 		out = append(out, *nc)
 	}
@@ -472,24 +468,24 @@ func (s *clientSet) list(custom map[string]map[string]any, nodes map[string]stri
 	return out
 }
 
-// applyWifi adds a Wi-Fi association to nc. The client list's own values
-// win, except that a generic "wifi" connection is narrowed to the band. The
-// node is only taken when it is a known mesh point.
-func applyWifi(nc *Client, w WifiClient, nodes map[string]string) {
-	nc.Wifi = &w
+// applyAssociation adds a Wi-Fi association to nc. The client list's own
+// values win, except that a generic "wifi" connection is narrowed to the
+// band. The unit is only taken when it is a known mesh point.
+func applyAssociation(nc *Client, a Association, units map[string]string) {
+	nc.WiFi = &a
 	nc.Online = true
-	nc.Network = w.Network
+	nc.Network = a.Network
 	if nc.Connection == "" || nc.Connection == "wifi" {
-		nc.Connection = w.Band
+		nc.Connection = a.Band
 	}
-	if nc.Node == nil && len(w.Node) > 0 && nodes[w.Node.String()] != "" {
-		nc.Node = w.Node
+	if nc.Unit == nil && len(a.Unit) > 0 && units[a.Unit.String()] != "" {
+		nc.Unit = a.Unit
 	}
-	if nc.IP == nil {
-		nc.IP = w.IP
+	if !nc.IP.IsValid() {
+		nc.IP = a.IP
 	}
 	if nc.HostName == "" {
-		nc.HostName = w.HostName
+		nc.HostName = a.HostName
 	}
 }
 
@@ -513,19 +509,19 @@ func applyFields(nc *Client, f map[string]any) {
 	nc.Description, _ = f["description"].(string)
 	nc.HostName, _ = f["host_name"].(string)
 	if ip, ok := f["ip"].(string); ok {
-		nc.IP = net.ParseIP(ip)
+		nc.IP, _ = netip.ParseAddr(ip)
 	}
 	if peer, ok := f["peer"].(string); ok {
-		nc.Node, _ = amplifi.ParseMAC(peer)
+		nc.Unit, _ = amplifi.ParseMAC(peer)
 	}
 	if id, ok := f["icon_id"].(float64); ok {
-		nc.IconID = int64(id)
+		nc.IconID = int(id)
 	}
 	if ts, ok := f["last_seen"].(float64); ok && ts > 0 {
 		nc.LastSeen = time.Unix(int64(ts), 0)
 	}
 	if n, ok := f["times_seen"].(float64); ok {
-		nc.TimesSeen = int64(n)
+		nc.TimesSeen = int(n)
 	}
 	if custom, ok := f["custom_info"].(map[string]any); ok {
 		nc.Custom = custom
@@ -572,14 +568,14 @@ func descend(paths []path, levels int) []path {
 
 // leaf is one client entry of a per-client Wi-Fi result.
 type leaf struct {
-	node, mac     amplifi.MAC
+	unit, mac     amplifi.MAC
 	band, network string
 	v             any
 }
 
 // leaves flattens a GetWifiClientInfo or GetWifiClientSignalQuality result:
-// node MAC -> band -> network -> client MAC -> value. The Device variants
-// omit the node level, which is detected by the top-level keys being band
+// unit MAC -> band -> network -> client MAC -> value. The Device variants
+// omit the unit level, which is detected by the top-level keys being band
 // codes.
 func leaves(m map[string]any) []leaf {
 	paths := descend([]path{{v: m}}, 4)
@@ -594,7 +590,7 @@ func leaves(m map[string]any) []leaf {
 			continue
 		}
 		out = append(out, leaf{
-			node:    rpc.MAC(p.keys[0]),
+			unit:    rpc.MAC(p.keys[0]),
 			mac:     mac,
 			band:    rpc.KeyName(rpc.BandNames, p.keys[1]),
 			network: rpc.KeyName(rpc.NetworkNames, p.keys[2]),
@@ -604,7 +600,7 @@ func leaves(m map[string]any) []leaf {
 	return out
 }
 
-// isBandMap reports whether the keys of m are band codes rather than node
+// isBandMap reports whether the keys of m are band codes rather than unit
 // MACs.
 func isBandMap(m map[string]any) bool {
 	for k := range m {
@@ -615,41 +611,41 @@ func isBandMap(m map[string]any) bool {
 	return false
 }
 
-// parseWifi decodes a GetWifiClientInfo result, sorted by MAC.
-func parseWifi(m map[string]any) []WifiClient {
-	out := []WifiClient{}
+// parseAssociations decodes a GetWifiClientInfo result, sorted by MAC.
+func parseAssociations(m map[string]any) []Association {
+	out := []Association{}
 	for _, l := range leaves(m) {
 		o, ok := l.v.(map[string]any)
 		if !ok {
 			continue
 		}
-		out = append(out, parseWifiEntry(l, o))
+		out = append(out, parseAssociation(l, o))
 	}
 
-	slices.SortFunc(out, func(a, b WifiClient) int { return cmp.Compare(a.MAC.String(), b.MAC.String()) })
+	slices.SortFunc(out, func(a, b Association) int { return cmp.Compare(a.MAC.String(), b.MAC.String()) })
 	return out
 }
 
-func parseWifiEntry(l leaf, o map[string]any) WifiClient {
-	w := WifiClient{
+func parseAssociation(l leaf, o map[string]any) Association {
+	w := Association{
 		MAC:            l.mac,
-		Node:           l.node,
+		Unit:           l.unit,
 		Band:           l.band,
 		Network:        l.network,
-		Signal:         rpc.Int(o, wifiSignal),
-		Inactive:       rpc.Int(o, wifiInactive),
+		Signal:         int(rpc.Int(o, wifiSignal)),
+		Inactive:       int(rpc.Int(o, wifiInactive)),
 		RxBytes:        rpc.Int(o, wifiRxBytes),
 		TxBytes:        rpc.Int(o, wifiTxBytes),
-		RxBitrate:      rpc.Int(o, wifiRxBitrate) / 1000,
-		TxBitrate:      rpc.Int(o, wifiTxBitrate) / 1000,
-		RxMCS:          rpc.Int(o, wifiRxMCS),
-		TxMCS:          rpc.Int(o, wifiTxMCS),
-		RxMHz:          rpc.Int(o, wifiRxMHz),
-		TxMHz:          rpc.Int(o, wifiTxMHz),
-		SpatialStreams: rpc.Int(o, wifiStreams),
-		MaxBandwidth:   rpc.Int(o, wifiBandwidth),
-		Happiness:      rpc.Int(o, wifiHappiness),
-		LeaseValidity:  rpc.Int(o, wifiLease),
+		RxBitrate:      int(rpc.Int(o, wifiRxBitrate)),
+		TxBitrate:      int(rpc.Int(o, wifiTxBitrate)),
+		RxMCS:          int(rpc.Int(o, wifiRxMCS)),
+		TxMCS:          int(rpc.Int(o, wifiTxMCS)),
+		RxMHz:          int(rpc.Int(o, wifiRxMHz)),
+		TxMHz:          int(rpc.Int(o, wifiTxMHz)),
+		SpatialStreams: int(rpc.Int(o, wifiStreams)),
+		MaxBandwidth:   int(rpc.Int(o, wifiBandwidth)),
+		Happiness:      int(rpc.Int(o, wifiHappiness)),
+		LeaseValidity:  int(rpc.Int(o, wifiLease)),
 		HostName:       text(o[wifiHostName]),
 		Description:    text(o[wifiDescription]),
 	}
@@ -659,9 +655,7 @@ func parseWifiEntry(l leaf, o map[string]any) WifiClient {
 	if mode, ok := wire.ToInt64(o[wifiRadioMode]); ok {
 		w.RadioMode = rpc.CodeName(modeNames, mode)
 	}
-	if ip := rpc.Bytes(o, wifiIP); len(ip) == 4 || len(ip) == 16 {
-		w.IP = net.IP(ip)
-	}
+	w.IP = rpc.Addr(o[wifiIP])
 	return w
 }
 
@@ -673,7 +667,7 @@ func parseSignals(m map[string]any) []Signal {
 		if !ok {
 			continue
 		}
-		out = append(out, Signal{MAC: l.mac, Node: l.node, Band: l.band, Network: l.network, Quality: q})
+		out = append(out, Signal{MAC: l.mac, Unit: l.unit, Band: l.band, Network: l.network, Quality: int(q)})
 	}
 
 	slices.SortFunc(out, func(a, b Signal) int { return cmp.Compare(a.MAC.String(), b.MAC.String()) })

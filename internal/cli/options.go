@@ -20,7 +20,7 @@ type Options struct {
 	Login      loginCmd         `kong:"cmd,help='log in and save the login'"`
 	Logout     logoutCmd        `kong:"cmd,help='delete a saved login'"`
 	Status     statusCmd        `kong:"cmd,help='show a health summary of a unit and its mesh'"`
-	Watch      watchCmd         `kong:"cmd,help='print events (signals) from a unit as they happen'"`
+	Watch      watchCmd         `kong:"cmd,help='print events from a unit as they happen'"`
 	Device     deviceCmd        `kong:"cmd,help='unit information, properties and display settings'"`
 	Mesh       meshCmd          `kong:"cmd,help='mesh points and units'"`
 	Clients    clientsCmd       `kong:"cmd,help='clients on the network'"`
@@ -32,12 +32,12 @@ type Options struct {
 	Firmware   fwCmd            `kong:"cmd,help='firmware upgrades'"`
 	Speedtest  speedtestCmd     `kong:"cmd,help='internet speed tests'"`
 	Iperf      systemIperfCmd   `kong:"cmd,help='start an iperf server on the unit for 30 seconds'"`
-	Site       siteCmd          `kong:"cmd,help='site configuration: time zone, guest limits and DFS'"`
+	Site       siteCmd          `kong:"cmd,help='site configuration: time zone, DFS and other mesh-wide settings'"`
 	Admin      adminCmd         `kong:"cmd,help='admin password'"`
 	Support    systemSupportCmd `kong:"cmd,help='support bundles'"`
 	Stats      systemStatsCmd   `kong:"cmd,help='statistics'"`
 	Homekit    systemHomeKitCmd `kong:"cmd,help='HomeKit service'"`
-	Magiclink  magiclinkCmd     `kong:"cmd,help='Teleport remote access'"`
+	Teleport   teleportCmd      `kong:"cmd,help='Teleport remote access'"`
 	Reboot     rebootCmd        `kong:"cmd,help='reboot a unit'"`
 	Raw        rawCmd           `kong:"cmd,help='direct method, property and ubus calls'"`
 	VersionCmd versionCmd       `kong:"cmd,name='version',help='show build version, commit and time'"`

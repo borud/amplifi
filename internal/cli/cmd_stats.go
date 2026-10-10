@@ -14,20 +14,20 @@ type systemStatsCmd struct {
 }
 
 type systemStatsResetCmd struct {
-	unitFlags `kong:"embed"`
-	yesFlag   `kong:"embed"`
-	Perf      bool `kong:"help='clear only the throughput statistics'"`
-	Speedtest bool `kong:"help='clear only the speed test history'"`
+	unitFlags  `kong:"embed"`
+	yesFlag    `kong:"embed"`
+	Throughput bool `kong:"aliases='perf',help='clear only the throughput statistics'"`
+	Speedtest  bool `kong:"help='clear only the speed test history'"`
 }
 
 // Run clears the selected statistics; both when none is selected.
 func (c *systemStatsResetCmd) Run(opt *Options) error {
-	perf, speedtest := c.Perf, c.Speedtest
-	if !perf && !speedtest {
-		perf, speedtest = true, true
+	throughput, speedtest := c.Throughput, c.Speedtest
+	if !throughput && !speedtest {
+		throughput, speedtest = true, true
 	}
 	what := make([]string, 0, 2)
-	if perf {
+	if throughput {
 		what = append(what, "throughput statistics")
 	}
 	if speedtest {
@@ -39,8 +39,15 @@ func (c *systemStatsResetCmd) Run(opt *Options) error {
 	}
 
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		if err := system.ResetStatistics(ctx, cl, perf, speedtest); err != nil {
-			return err
+		if throughput {
+			if err := system.ResetThroughputStats(ctx, cl); err != nil {
+				return err
+			}
+		}
+		if speedtest {
+			if err := system.ResetSpeedTestHistory(ctx, cl); err != nil {
+				return err
+			}
 		}
 		if opt.JSON() {
 			return printJSON(map[string][]string{"cleared": what})

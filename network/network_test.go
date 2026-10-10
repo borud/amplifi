@@ -1,8 +1,8 @@
 package network
 
 import (
-	"bytes"
 	"context"
+	"net/netip"
 	"reflect"
 	"testing"
 
@@ -10,74 +10,6 @@ import (
 	"github.com/borud/amplifi/internal/rpc"
 	"github.com/borud/amplifi/internal/wire"
 )
-
-func TestNetPackIP(t *testing.T) {
-	b, err := packIP("192.168.1.254")
-	if err != nil || !bytes.Equal(b, []byte{192, 168, 1, 254}) {
-		t.Fatalf("got %v, %v", b, err)
-	}
-
-	b, err = packCIDR("192.0.2.1/24")
-	if err != nil || !bytes.Equal(b, []byte{192, 0, 2, 1, 24}) {
-		t.Fatalf("got %v, %v", b, err)
-	}
-
-	b, err = packMAC(amplifi.MAC{0x00, 0x00, 0x5e, 0x00, 0x53, 0x1b})
-	if err != nil || !bytes.Equal(b, []byte{0x00, 0x00, 0x5e, 0x00, 0x53, 0x1b}) {
-		t.Fatalf("got %v, %v", b, err)
-	}
-
-	if b, err := packIP(""); err != nil || b == nil || len(b) != 0 {
-		t.Fatalf("empty: got %v, %v", b, err)
-	}
-
-	for _, bad := range []string{"192.0.2", "::1", "192.0.2.256", "x"} {
-		if _, err := packIP(bad); err == nil {
-			t.Errorf("packIP(%q) should fail", bad)
-		}
-	}
-	for _, bad := range []string{"192.0.2.1", "192.0.2.1/33", "::1/64"} {
-		if _, err := packCIDR(bad); err == nil {
-			t.Errorf("packCIDR(%q) should fail", bad)
-		}
-	}
-	if _, err := packMAC(amplifi.MAC{0x74, 0x83, 0xc2}); err == nil {
-		t.Error("short MAC should fail")
-	}
-}
-
-func TestNetAddr(t *testing.T) {
-	v6 := []byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
-	cases := []struct {
-		in   any
-		want string
-	}{
-		{[]byte{192, 0, 2, 1}, "192.0.2.1"},
-		{[]byte{192, 168, 128, 1, 17}, "192.168.128.1/17"},
-		{v6, "2001:db8::1"},
-		{append(append([]byte{}, v6...), 64), "2001:db8::1/64"},
-		{[]byte{1, 2}, "0102"},
-		{[]byte{}, ""},
-		{nil, ""},
-		{"192.0.2.1", ""},
-	}
-	for _, c := range cases {
-		if got := formatAddr(c.in); got != c.want {
-			t.Errorf("formatAddr(%v) = %q, want %q", c.in, got, c.want)
-		}
-	}
-
-	got := formatAddrs([]any{[]byte{1, 1, 1, 1}, []byte{8, 8, 8, 8}})
-	if !reflect.DeepEqual(got, []string{"1.1.1.1", "8.8.8.8"}) {
-		t.Fatalf("formatAddrs list: %v", got)
-	}
-	if got := formatAddrs([]byte{9, 9, 9, 9}); !reflect.DeepEqual(got, []string{"9.9.9.9"}) {
-		t.Fatalf("formatAddrs single: %v", got)
-	}
-	if got := formatAddrs(nil); got == nil || len(got) != 0 {
-		t.Fatalf("formatAddrs nil: %#v", got)
-	}
-}
 
 func TestParseNetworkConfig(t *testing.T) {
 	m := map[string]any{
@@ -88,38 +20,40 @@ func TestParseNetworkConfig(t *testing.T) {
 		wanPassword:       "secret",
 		wanUp:             true,
 		wanRuntimeAddress: []byte{198, 51, 100, 3, 22},
+		wanGateway:        []byte{198, 51, 100, 1},
 		wanRuntimeGateway: []byte{198, 51, 100, 1},
 		wanRuntimeDNS:     []byte{198, 51, 100, 2},
 		wanMAC:            []byte{0x02, 0, 0, 0, 0, 1},
 		wanBridgeMode:     false,
-		lanGateway:        []byte{192, 168, 1, 1, 24},
-		guestGateway:      []byte{192, 168, 2, 1, 24},
-		iotGateway:        []byte{192, 168, 3, 1, 24},
+		lanGateway:        []byte{192, 0, 2, 1, 24},
+		guestGateway:      []byte{192, 0, 2, 129, 26},
+		iotGateway:        []byte{192, 0, 2, 193},
 		wanVLAN:           uint16(102),
 		wan6Protocol:      int8(4),
 		hwNAT:             true,
 		"99":              "ignored",
 	}
 	got := parseConfig(m)
-	want := &Configuration{
+	want := &Config{
 		WANType:            "pppoe",
-		WANDNS:             []string{"1.1.1.1"},
+		WANGateway:         netip.MustParseAddr("198.51.100.1"),
+		WANDNS:             []netip.Addr{netip.MustParseAddr("1.1.1.1")},
 		WANUsername:        "user",
 		WANPassword:        "secret",
 		WANVLAN:            102,
 		WANMAC:             amplifi.MAC{0x02, 0, 0, 0, 0, 1},
 		WAN6Protocol:       "dhcpv6",
 		HWNAT:              true,
-		LANGateway:         "192.168.1.1/24",
-		GuestGateway:       "192.168.2.1/24",
-		IoTGateway:         "192.168.3.1/24",
+		LANGateway:         netip.MustParsePrefix("192.0.2.1/24"),
+		GuestGateway:       netip.MustParsePrefix("192.0.2.129/26"),
+		IoTGateway:         netip.MustParsePrefix("192.0.2.193/32"),
 		WANUp:              true,
-		RuntimeWANAddress:  "198.51.100.3/22",
-		RuntimeWANGateway:  "198.51.100.1",
-		RuntimeWANDNS:      []string{"198.51.100.2"},
-		RuntimeWAN6Address: []string{},
-		RuntimeWAN6Gateway: []string{},
-		RuntimeWAN6DNS:     []string{},
+		RuntimeWANAddress:  netip.MustParsePrefix("198.51.100.3/22"),
+		RuntimeWANGateway:  netip.MustParseAddr("198.51.100.1"),
+		RuntimeWANDNS:      []netip.Addr{netip.MustParseAddr("198.51.100.2")},
+		RuntimeWAN6Address: []netip.Prefix{},
+		RuntimeWAN6Gateway: []netip.Addr{},
+		RuntimeWAN6DNS:     []netip.Addr{},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got  %+v\nwant %+v", got, want)
@@ -127,14 +61,16 @@ func TestParseNetworkConfig(t *testing.T) {
 }
 
 func TestConfigUpdateOptions(t *testing.T) {
-	typ, addr, gw, lan := "static", "203.0.113.10/29", "203.0.113.9", "198.51.100.1/24"
+	typ := "static"
+	addr, gw, lan := netip.MustParsePrefix("203.0.113.10/29"), netip.MustParseAddr("203.0.113.9"), netip.MustParsePrefix("198.51.100.1/24")
+	dns := []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("9.9.9.9")}
 	var mac amplifi.MAC
 	vlan, nat := 7, false
 	ch := ConfigUpdate{
 		WANType:       &typ,
 		WANStaticAddr: &addr,
 		WANGateway:    &gw,
-		WANDNS:        []string{"1.1.1.1", "9.9.9.9"},
+		WANDNS:        dns,
 		WANVLAN:       &vlan,
 		WANMAC:        &mac,
 		HWNAT:         &nat,
@@ -169,7 +105,7 @@ func TestConfigUpdateOptions(t *testing.T) {
 	}
 	back := parseConfig(v.(map[string]any))
 	if back.WANType != "static" || back.WANStaticAddr != addr || back.WANGateway != gw ||
-		back.LANGateway != lan || back.WANVLAN != 7 || !reflect.DeepEqual(back.WANDNS, []string{"1.1.1.1", "9.9.9.9"}) {
+		back.LANGateway != lan || back.WANVLAN != 7 || !reflect.DeepEqual(back.WANDNS, dns) {
 		t.Fatalf("round trip: %+v", back)
 	}
 
@@ -177,8 +113,11 @@ func TestConfigUpdateOptions(t *testing.T) {
 	if _, err := (ConfigUpdate{WAN6Protocol: &bad}).options(); err == nil {
 		t.Fatal("unknown protocol should fail")
 	}
-	if _, err := (ConfigUpdate{WANDNS: []string{"1.1.1.1", "nope"}}).options(); err == nil {
-		t.Fatal("bad DNS should fail")
+	if _, err := (ConfigUpdate{WANDNS: []netip.Addr{netip.MustParseAddr("2001:db8::53")}}).options(); err == nil {
+		t.Fatal("IPv6 DNS should fail")
+	}
+	if got, err := (ConfigUpdate{WANGateway: &netip.Addr{}}).options(); err != nil || len(got[wanGateway].([]byte)) != 0 {
+		t.Fatalf("zero gateway should clear: %v, %v", got, err)
 	}
 	off := "off"
 	if got, err := (ConfigUpdate{WAN6Protocol: &off}).options(); err != nil || got[wan6Protocol] != int64(1) {
@@ -199,7 +138,7 @@ func TestParseNetworkInterfaces(t *testing.T) {
 		"lan": map[string]any{
 			ifDevice:   "br-lan",
 			ifProtocol: int8(2),
-			ifAddress:  []byte{192, 168, 1, 1, 24},
+			ifAddress:  []byte{192, 0, 2, 1, 24},
 		},
 		"junk": "not a map",
 	}
@@ -207,14 +146,14 @@ func TestParseNetworkInterfaces(t *testing.T) {
 	if len(got) != 2 || got[0].Name != "lan" || got[1].Name != "wan" {
 		t.Fatalf("unexpected interfaces: %+v", got)
 	}
-	if got[0].Address != "192.168.1.1/24" || got[0].Protocol != "static" || got[0].Device != "br-lan" {
+	if got[0].Address.String() != "192.0.2.1/24" || got[0].Protocol != "static" || got[0].Device != "br-lan" {
 		t.Fatalf("lan: %+v", got[0])
 	}
-	if got[1].Protocol != "dhcp" || !got[1].Up || got[1].RuntimeAddress != "198.51.100.3/22" || got[1].RuntimeDNS[0] != "198.51.100.2" {
+	if got[1].Protocol != "dhcp" || !got[1].Up || got[1].RuntimeAddress.String() != "198.51.100.3/22" || got[1].RuntimeDNS[0].String() != "198.51.100.2" {
 		t.Fatalf("wan: %+v", got[1])
 	}
 
-	enabled, addr := false, "192.0.2.1/8"
+	enabled, addr := false, netip.MustParsePrefix("192.0.2.1/8")
 	opts, err := InterfaceUpdate{Enabled: &enabled, Address: &addr}.options()
 	if err != nil {
 		t.Fatal(err)
@@ -225,11 +164,11 @@ func TestParseNetworkInterfaces(t *testing.T) {
 }
 
 func TestRedacted(t *testing.T) {
-	cfg := Configuration{WANPassword: "secret"}
+	cfg := Config{WANPassword: "secret"}
 	if r := cfg.Redacted(); r.WANPassword != rpc.Redacted || cfg.WANPassword != "secret" {
 		t.Fatalf("config: %q, original %q", r.WANPassword, cfg.WANPassword)
 	}
-	if r := (Configuration{}).Redacted(); r.WANPassword != "" {
+	if r := (Config{}).Redacted(); r.WANPassword != "" {
 		t.Fatalf("empty password masked: %q", r.WANPassword)
 	}
 	if r := (Interface{Password: "secret"}).Redacted(); r.Password != rpc.Redacted {

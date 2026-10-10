@@ -1,6 +1,7 @@
 // Package mesh covers the units that make up the mesh: the connected mesh
 // points, every registered unit, backhaul signal quality, the Ethernet ports
-// of every unit, and ignoring or factory resetting units.
+// of every unit, factory pairing of new mesh points, and ignoring or factory
+// resetting units.
 package mesh
 
 import (
@@ -9,7 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
+	"net/netip"
 	"slices"
 	"time"
 
@@ -23,9 +24,8 @@ type Peer struct {
 	MAC  amplifi.MAC `json:"mac"`
 	Name string      `json:"name"`
 
-	// Role is "router" or "extender".
-	Role string `json:"role"`
-	IP   net.IP `json:"ip"`
+	Role amplifi.Role `json:"role"`
+	IP   netip.Addr   `json:"ip"`
 
 	// Uptime marshals as whole seconds.
 	Uptime time.Duration `json:"uptime"`
@@ -62,7 +62,7 @@ func Peers(ctx context.Context, c *amplifi.Client) ([]Peer, error) {
 		peers = append(peers, parsePeer(mac, fields))
 	}
 
-	slices.SortFunc(peers, func(a, b Peer) int { return compareUnits(unit{a.Role, a.Name}, unit{b.Role, b.Name}) })
+	slices.SortFunc(peers, func(a, b Peer) int { return compareUnits(a.Role, a.Name, b.Role, b.Name) })
 	return peers, nil
 }
 
@@ -86,10 +86,11 @@ func parsePeer(mac string, f []any) Peer {
 	p := Peer{MAC: rpc.MAC(mac), Band: defaultPeerBand, RSSI: defaultPeerRSSI}
 	p.Name, _ = at(0).(string)
 	if role, ok := wire.ToInt64(at(1)); ok {
-		p.Role = rpc.CodeName(rpc.RoleNames, role)
+		p.Role = rpc.Role(role)
 	}
 	if ip, ok := at(2).([]byte); ok {
-		p.IP = net.IP(ip)
+		a, _ := netip.AddrFromSlice(ip)
+		p.IP = a.Unmap()
 	}
 	if up, ok := wire.ToInt64(at(3)); ok {
 		p.Uptime = time.Duration(up) * time.Second
@@ -104,46 +105,42 @@ func parsePeer(mac string, f []any) Peer {
 	return p
 }
 
-// unit is the role and name of a unit, for sorting.
-type unit struct {
-	role, name string
-}
-
 // compareUnits orders units with the router first and the rest by name.
-func compareUnits(a, b unit) int {
-	if a.role != b.role && (a.role == "router" || b.role == "router") {
-		if a.role == "router" {
+func compareUnits(roleA amplifi.Role, nameA string, roleB amplifi.Role, nameB string) int {
+	routerA, routerB := roleA == amplifi.RoleRouter, roleB == amplifi.RoleRouter
+	if routerA != routerB {
+		if routerA {
 			return -1
 		}
 		return 1
 	}
-	return cmp.Compare(a.name, b.name)
+	return cmp.Compare(nameA, nameB)
 }
 
-// Node is a unit registered in the mesh, whether or not it is currently
+// Unit is a unit registered in the mesh, whether or not it is currently
 // connected.
-type Node struct {
-	MAC      amplifi.MAC `json:"mac"`
-	Name     string      `json:"name"`
-	Role     string      `json:"role"`
-	Platform string      `json:"platform,omitempty"`
+type Unit struct {
+	MAC      amplifi.MAC  `json:"mac"`
+	Name     string       `json:"name"`
+	Role     amplifi.Role `json:"role"`
+	Platform string       `json:"platform,omitempty"`
 }
 
-// Nodes lists every unit registered in the mesh, the router first and the
+// Units lists every unit registered in the mesh, the router first and the
 // rest by name.
-func Nodes(ctx context.Context, c *amplifi.Client) ([]Node, error) {
+func Units(ctx context.Context, c *amplifi.Client) ([]Unit, error) {
 	m, err := rpc.Map(ctx, c, amplifi.IfaceClusterNode, "GetRegisteredNodeList", nil)
 	if err != nil {
-		return nil, fmt.Errorf("mesh nodes: %w", err)
+		return nil, fmt.Errorf("mesh units: %w", err)
 	}
-	return parseNodes(m), nil
+	return parseUnits(m), nil
 }
 
-// parseNodes decodes a GetRegisteredNodeList result: a map of binary MAC to
+// parseUnits decodes a GetRegisteredNodeList result: a map of binary MAC to
 // [name, role, platform name]. Entries without a
 // name and role are skipped.
-func parseNodes(m map[string]any) []Node {
-	nodes := make([]Node, 0, len(m))
+func parseUnits(m map[string]any) []Unit {
+	units := make([]Unit, 0, len(m))
 	for mac, v := range m {
 		f, ok := v.([]any)
 		if !ok || len(f) < 2 {
@@ -158,15 +155,15 @@ func parseNodes(m map[string]any) []Node {
 			continue
 		}
 
-		n := Node{MAC: rpc.MAC(mac), Name: name, Role: rpc.CodeName(rpc.RoleNames, role)}
+		u := Unit{MAC: rpc.MAC(mac), Name: name, Role: rpc.Role(role)}
 		if len(f) > 2 {
-			n.Platform, _ = f[2].(string)
+			u.Platform, _ = f[2].(string)
 		}
-		nodes = append(nodes, n)
+		units = append(units, u)
 	}
 
-	slices.SortFunc(nodes, func(a, b Node) int { return compareUnits(unit{a.Role, a.Name}, unit{b.Role, b.Name}) })
-	return nodes
+	slices.SortFunc(units, func(a, b Unit) int { return compareUnits(a.Role, a.Name, b.Role, b.Name) })
+	return units
 }
 
 // Signal is the backhaul signal quality of one mesh peer as seen on one band
@@ -213,14 +210,12 @@ func parseSignals(m map[string]any) []Signal {
 
 // Port is the state of one Ethernet port on one unit.
 type Port struct {
-	Node amplifi.MAC `json:"node"`
-	Port string      `json:"port"`
-	Link bool        `json:"link"`
-
-	// LinkSpeed is in Mbit/s, the bitrates in kbit/s.
-	LinkSpeed int `json:"link_speed"`
-	RxBitrate int `json:"rx_bitrate"`
-	TxBitrate int `json:"tx_bitrate"`
+	Unit          amplifi.MAC `json:"unit"`
+	Port          string      `json:"port"`
+	Link          bool        `json:"link"`
+	LinkSpeedMbps int         `json:"link_speed_mbps"`
+	RxKbps        int         `json:"rx_kbps"`
+	TxKbps        int         `json:"tx_kbps"`
 }
 
 // portInfo is one port in a GetEthernetPortInfo result.
@@ -259,7 +254,7 @@ func portsFromSignal(ctx context.Context, c *amplifi.Client) ([]Port, error) {
 	ctx, cancel := context.WithTimeout(ctx, portSignalWait)
 	defer cancel()
 
-	for sig, err := range c.Signals(ctx) {
+	for sig, err := range c.Events(ctx) {
 		if err != nil {
 			return nil, fmt.Errorf("ethernet ports: %w", err)
 		}
@@ -281,46 +276,46 @@ func portsFromSignal(ctx context.Context, c *amplifi.Client) ([]Port, error) {
 // MAC as text.
 func flattenPorts(info map[string]map[string]portInfo) ([]Port, error) {
 	ports := []Port{}
-	for node, nodePorts := range info {
-		mac, err := amplifi.ParseMAC(node)
+	for unit, unitPorts := range info {
+		mac, err := amplifi.ParseMAC(unit)
 		if err != nil {
 			return nil, fmt.Errorf("ethernet ports: unit: %w", err)
 		}
-		for port, p := range nodePorts {
+		for port, p := range unitPorts {
 			ports = append(ports, Port{
-				Node:      mac,
-				Port:      port,
-				Link:      p.Link,
-				LinkSpeed: p.LinkSpeed,
-				RxBitrate: p.RxBitrate,
-				TxBitrate: p.TxBitrate,
+				Unit:          mac,
+				Port:          port,
+				Link:          p.Link,
+				LinkSpeedMbps: p.LinkSpeed,
+				RxKbps:        p.RxBitrate,
+				TxKbps:        p.TxBitrate,
 			})
 		}
 	}
 
 	slices.SortFunc(ports, func(a, b Port) int {
-		return cmp.Or(bytes.Compare(a.Node, b.Node), rpc.CompareNumeric(a.Port, b.Port))
+		return cmp.Or(bytes.Compare(a.Unit, b.Unit), rpc.CompareNumeric(a.Port, b.Port))
 	})
 	return ports, nil
 }
 
 // Ignore tells the router to ignore the given units, so they are no longer
 // offered for adoption into the mesh. The argument, a msgpack array of binary
-// MACs as for FactoryResetNodes, is untested.
+// MACs as for FactoryReset, is untested.
 func Ignore(ctx context.Context, c *amplifi.Client, macs ...amplifi.MAC) error {
 	if err := rpc.Set(ctx, c, amplifi.IfaceClusterNode, "IgnoreNodes", macArray(macs)); err != nil {
-		return fmt.Errorf("ignore mesh nodes: %w", err)
+		return fmt.Errorf("ignore mesh units: %w", err)
 	}
 	return nil
 }
 
-// FactoryResetNodes lists the units the router is able to factory reset.
-// The result format is unknown; binary MACs found as array elements or map
-// keys are returned.
-func FactoryResetNodes(ctx context.Context, c *amplifi.Client) ([]amplifi.MAC, error) {
+// ResettableUnits lists the units the router is able to factory reset. The
+// result format is unknown; binary MACs found as array elements or map keys
+// are returned.
+func ResettableUnits(ctx context.Context, c *amplifi.Client) ([]amplifi.MAC, error) {
 	v, err := c.Call(ctx, amplifi.IfaceClusterNode, "GetFactoryResetNodeList", nil)
 	if err != nil {
-		return nil, fmt.Errorf("factory reset nodes: %w", err)
+		return nil, fmt.Errorf("resettable units: %w", err)
 	}
 	return collectMACs(v)
 }
@@ -348,7 +343,7 @@ func collectMACs(v any) ([]amplifi.MAC, error) {
 			}
 		}
 	default:
-		return nil, fmt.Errorf("factory reset nodes: unexpected result %T", v)
+		return nil, fmt.Errorf("resettable units: unexpected result %T", v)
 	}
 
 	slices.SortFunc(macs, func(a, b amplifi.MAC) int { return bytes.Compare(a, b) })

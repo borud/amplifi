@@ -8,6 +8,7 @@ import (
 	"io"
 	"maps"
 	"net"
+	"net/netip"
 	"os"
 	"slices"
 	"strconv"
@@ -156,11 +157,11 @@ func (f *onOffFlag) Decode(ctx *kong.DecodeContext) error {
 
 // channelText formats a Wi-Fi channel. The router stores automatic as -1; 0
 // is treated the same.
-func channelText(ch int64) string {
+func channelText(ch int) string {
 	if ch <= 0 {
 		return "auto"
 	}
-	return strconv.FormatInt(ch, 10)
+	return strconv.Itoa(ch)
 }
 
 // parseChannel parses a channel number or "auto" (-1).
@@ -175,31 +176,66 @@ func parseChannel(s string) (int, error) {
 	return n, nil
 }
 
-// clockText formats minutes after midnight as HH:MM.
-func clockText(minutes int) string {
+// clockText formats a time of day, a duration since midnight, as HH:MM.
+func clockText(d time.Duration) string {
+	minutes := int(d / time.Minute)
 	return fmt.Sprintf("%02d:%02d", minutes/60, minutes%60)
 }
 
-// parseClock parses HH:MM into minutes after midnight.
-func parseClock(s string) (int, error) {
+// parseClock parses HH:MM into a duration since midnight.
+func parseClock(s string) (time.Duration, error) {
 	t, err := time.Parse("15:04", s)
 	if err != nil {
 		return 0, fmt.Errorf("time %q: want HH:MM", s)
 	}
-	return t.Hour()*60 + t.Minute(), nil
+	return time.Duration(t.Hour())*time.Hour + time.Duration(t.Minute())*time.Minute, nil
 }
 
-// unixTime formats Unix seconds, or "-" for none.
-func unixTime(unix int64) string {
-	if unix <= 0 {
+// timeText formats a timestamp in local time, or "-" for none.
+func timeText(t time.Time) string {
+	if t.IsZero() {
 		return "-"
 	}
-	return time.Unix(unix, 0).Format(time.DateTime)
+	return t.Local().Format(time.DateTime)
+}
+
+// addrText formats an address, or "" when it is unset.
+func addrText(a netip.Addr) string {
+	if !a.IsValid() {
+		return ""
+	}
+	return a.String()
+}
+
+// prefixText formats an address with prefix length, or "" when it is unset.
+func prefixText(p netip.Prefix) string {
+	if !p.IsValid() {
+		return ""
+	}
+	return p.String()
+}
+
+// addrsText formats a list of addresses, comma separated.
+func addrsText[T fmt.Stringer](list []T) string {
+	s := make([]string, 0, len(list))
+	for _, a := range list {
+		s = append(s, a.String())
+	}
+	return strings.Join(s, ", ")
 }
 
 // mbit formats a kbit/s rate as Mbit/s.
-func mbit(kbit int64) string {
+func mbit(kbit int) string {
 	return strconv.FormatFloat(float64(kbit)/1000, 'f', 1, 64) + " Mbit/s"
+}
+
+// deref returns *p, or the zero value when p is nil.
+func deref[T any](p *T) T {
+	if p == nil {
+		var zero T
+		return zero
+	}
+	return *p
 }
 
 // orDash returns s, or "-" when it is empty.
@@ -401,16 +437,65 @@ func secretText(s string) string {
 	return "(new)"
 }
 
+// addr records an IP address given as text; "" clears the setting.
+func (cs *changeSet) addr(field string, v *string, old netip.Addr) *netip.Addr {
+	if v == nil {
+		return nil
+	}
+	var a netip.Addr
+	if *v != "" {
+		var err error
+		if a, err = netip.ParseAddr(*v); err != nil {
+			cs.fail(field, err)
+			return nil
+		}
+	}
+	cs.add(field, orDash(addrText(old)), orDash(addrText(a)))
+	return &a
+}
+
+// prefix records an address with prefix length given as text, such as
+// 192.0.2.1/24; "" clears the setting.
+func (cs *changeSet) prefix(field string, v *string, old netip.Prefix) *netip.Prefix {
+	if v == nil {
+		return nil
+	}
+	var p netip.Prefix
+	if *v != "" {
+		var err error
+		if p, err = netip.ParsePrefix(*v); err != nil {
+			cs.fail(field, err)
+			return nil
+		}
+	}
+	cs.add(field, orDash(prefixText(old)), orDash(prefixText(p)))
+	return &p
+}
+
 // number records an integer setting.
-func (cs *changeSet) number(field string, v *int, old int64) *int {
+func (cs *changeSet) number(field string, v *int, old int) *int {
 	if v != nil {
-		cs.add(field, strconv.FormatInt(old, 10), strconv.Itoa(*v))
+		cs.add(field, strconv.Itoa(old), strconv.Itoa(*v))
 	}
 	return v
 }
 
+// clock records a time of day given as HH:MM.
+func (cs *changeSet) clock(field string, v *string, old time.Duration) *time.Duration {
+	if v == nil {
+		return nil
+	}
+	d, err := parseClock(*v)
+	if err != nil {
+		cs.fail(field, err)
+		return nil
+	}
+	cs.add(field, clockText(old), clockText(d))
+	return &d
+}
+
 // channel records a Wi-Fi channel given as a number or "auto".
-func (cs *changeSet) channel(field string, v *string, old int64) *int {
+func (cs *changeSet) channel(field string, v *string, old int) *int {
 	if v == nil {
 		return nil
 	}
@@ -419,7 +504,7 @@ func (cs *changeSet) channel(field string, v *string, old int64) *int {
 		cs.fail(field, err)
 		return nil
 	}
-	cs.add(field, channelText(old), channelText(int64(ch)))
+	cs.add(field, channelText(old), channelText(ch))
 	return &ch
 }
 

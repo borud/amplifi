@@ -120,7 +120,7 @@ func TestParseWifiInterfaces(t *testing.T) {
 }
 
 func TestWifiListsAndScan(t *testing.T) {
-	if got := ints([]any{int8(1), int16(36), "x"}); !slices.Equal(got, []int64{1, 36}) {
+	if got := ints([]any{int8(1), int16(36), "x"}); !slices.Equal(got, []int{1, 36}) {
 		t.Fatalf("ints = %v", got)
 	}
 	if got := countryCodes("NOSEUS"); !slices.Equal(got, []string{"NO", "SE", "US"}) {
@@ -153,5 +153,30 @@ func TestMACValueAndPMF(t *testing.T) {
 	}
 	if p, err := ParsePMF("Disabled"); err != nil || p != PMFOff {
 		t.Fatalf("pmf = %v, %v", p, err)
+	}
+}
+
+func TestChannelList(t *testing.T) {
+	var m map[string][]channelEntry
+	raw := `{"5g": [{"chan": 100, "mhz": 5500, "dfs_state": 2}, {"chan": 36, "mhz": 5180}], "2g": [{"chan": 1, "mhz": 2412}]}`
+	if err := rpc.Decode("GetWifiChannelsInfo", raw, &m); err != nil {
+		t.Fatal(err)
+	}
+
+	got := channelList(m)
+	want := []string{"2g/1/2412", "5g/36/5180", "5g/100/5500"}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v", got)
+	}
+	for i, ch := range got {
+		if s := fmt.Sprintf("%s/%d/%d", ch.Band, ch.Number, ch.FreqMHz); s != want[i] {
+			t.Errorf("channel %d = %s, want %s", i, s, want[i])
+		}
+	}
+	if got[2].DFSState == nil || *got[2].DFSState != 2 || got[1].DFSState != nil {
+		t.Errorf("DFS state: %+v", got[1:])
+	}
+	if empty := channelList(nil); empty == nil {
+		t.Error("nil list")
 	}
 }

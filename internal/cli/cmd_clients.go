@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"net"
 	"os"
 	"slices"
 	"strings"
@@ -17,7 +16,7 @@ import (
 )
 
 type clientsCmd struct {
-	List           clientsListCmd        `kong:"cmd,help='list clients (wired and Wi-Fi) known to the mesh'"`
+	List           clientsListCmd        `kong:"cmd,aliases='ls',help='list clients (wired and Wi-Fi) known to the mesh'"`
 	Show           clientsShowCmd        `kong:"cmd,help='show one client in detail'"`
 	History        clientsHistoryCmd     `kong:"cmd,help='list clients the mesh has seen before'"`
 	Signal         clientsSignalCmd      `kong:"cmd,help='show the signal quality of each Wi-Fi client'"`
@@ -34,7 +33,7 @@ type clientsListCmd struct {
 	Online    bool   `kong:"help='only clients that are online'"`
 	Wired     bool   `kong:"help='only wired clients',xor='medium'"`
 	Wifi      bool   `kong:"help='only Wi-Fi clients',xor='medium'"`
-	Node      string `kong:"help='only clients connected to this unit (name or MAC address)'"`
+	Unit      string `kong:"help='only clients connected to this unit (name or MAC address)'"`
 }
 
 // Run lists the clients, filtered by the flags.
@@ -63,10 +62,10 @@ func (c *clientsListCmd) keep(n clients.Client) bool {
 	if c.Wifi && (n.Connection == "wired" || n.Connection == "") {
 		return false
 	}
-	if c.Node == "" {
+	if c.Unit == "" {
 		return true
 	}
-	return strings.EqualFold(c.Node, n.Node.String()) || strings.EqualFold(c.Node, n.NodeName)
+	return strings.EqualFold(c.Unit, n.Unit.String()) || strings.EqualFold(c.Unit, n.UnitName)
 }
 
 type clientsShowCmd struct {
@@ -128,9 +127,9 @@ func (c *clientsSignalCmd) Run(opt *Options) error {
 			return printJSON(signals)
 		}
 		tw := newTable(os.Stdout)
-		fmt.Fprintln(tw, "MAC\tBAND\tNETWORK\tNODE\tQUALITY")
+		fmt.Fprintln(tw, "MAC\tBAND\tNETWORK\tUNIT\tQUALITY")
 		for _, s := range signals {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\n", s.MAC, s.Band, s.Network, orDash(clientsNode(s.NodeName, s.Node)), s.Quality)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\n", s.MAC, s.Band, s.Network, orDash(clientsUnit(s.UnitName, s.Unit)), s.Quality)
 		}
 		return tw.Flush()
 	})
@@ -200,7 +199,7 @@ func clientsSetPaused(opt *Options, u *unitFlags, y yesFlag, ref string, paused 
 	return apply(opt, u, y, fmt.Sprintf("change client %s on %s?", ref, u.Host), clientsReader(ref),
 		func(cs *changeSet, n clients.Client) writeFunc {
 			cs.add(clientsLabel(n)+" paused", "?", onOff(paused))
-			return func(ctx context.Context, cl *amplifi.Client) error { return clients.Pause(ctx, cl, n.MAC, paused) }
+			return func(ctx context.Context, cl *amplifi.Client) error { return clients.SetPaused(ctx, cl, n.MAC, paused) }
 		})
 }
 
@@ -296,11 +295,11 @@ func clientsFind(all []clients.Client, ref string) (clients.Client, error) {
 
 func clientsPrintTable(w io.Writer, list []clients.Client) error {
 	tw := newTable(w)
-	fmt.Fprintln(tw, "NAME\tMAC\tIP\tCONNECTION\tNODE\tSIGNAL\tSTATUS")
+	fmt.Fprintln(tw, "NAME\tMAC\tIP\tCONNECTION\tUNIT\tSIGNAL\tSTATUS")
 	for _, n := range list {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			orDash(n.Name), n.MAC, orDash(clientsIP(n.IP)), orDash(clientsConnection(n)),
-			orDash(clientsNode(n.NodeName, n.Node)), clientsSignal(n), clientsStatus(n))
+			orDash(n.Name), n.MAC, orDash(addrText(n.IP)), orDash(clientsConnection(n)),
+			orDash(clientsUnit(n.UnitName, n.Unit)), clientsSignal(n), clientsStatus(n))
 	}
 	return tw.Flush()
 }
@@ -310,7 +309,7 @@ func clientsPrintHistory(w io.Writer, list []clients.Client, now time.Time) erro
 	fmt.Fprintln(tw, "NAME\tMAC\tIP\tCONNECTION\tLAST SEEN\tTIMES SEEN\tSTATUS")
 	for _, n := range list {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
-			n.Name, n.MAC, orDash(clientsIP(n.IP)), orDash(clientsConnection(n)),
+			n.Name, n.MAC, orDash(addrText(n.IP)), orDash(clientsConnection(n)),
 			clientsAgo(n.LastSeen, now), n.TimesSeen, clientsStatus(n))
 	}
 	return tw.Flush()
@@ -349,19 +348,19 @@ func clientsPrintDetail(w io.Writer, n clients.Client) error {
 		row("icon id", fmt.Sprintf("%d (fingerprint device id)", n.IconID))
 	}
 	row("mac", n.MAC.String())
-	row("ip", clientsIP(n.IP))
+	row("ip", addrText(n.IP))
 	row("connection", clientsConnection(n))
 	row("network", n.Network)
-	row("node", clientsNode(n.NodeName, n.Node))
+	row("unit", clientsUnit(n.UnitName, n.Unit))
 	row("status", clientsStatus(n))
 	if !n.LastSeen.IsZero() {
 		row("last seen", fmt.Sprintf("%s (%s)", n.LastSeen.Local().Format(time.DateTime), clientsAgo(n.LastSeen, time.Now())))
 		row("times seen", fmt.Sprint(n.TimesSeen))
 	}
-	if wf := n.Wifi; wf != nil {
+	if wf := n.WiFi; wf != nil {
 		row("mode", strings.TrimSpace(wf.Mode+" "+clientsRadioMode(wf)))
 		row("signal", fmt.Sprint(wf.Signal))
-		row("rate", fmt.Sprintf("rx %d Mbit/s  tx %d Mbit/s", wf.RxBitrate, wf.TxBitrate))
+		row("bitrate", fmt.Sprintf("rx %d  tx %d (raw)", wf.RxBitrate, wf.TxBitrate))
 		row("mcs", fmt.Sprintf("rx %d  tx %d", wf.RxMCS, wf.TxMCS))
 		row("channel width", fmt.Sprintf("rx %d MHz  tx %d MHz", wf.RxMHz, wf.TxMHz))
 		row("streams", fmt.Sprint(wf.SpatialStreams))
@@ -377,23 +376,23 @@ func clientsPrintDetail(w io.Writer, n clients.Client) error {
 	return tw.Flush()
 }
 
-func clientsRadioMode(wf *clients.WifiClient) string {
+func clientsRadioMode(wf *clients.Association) string {
 	if wf.RadioMode == "" || wf.RadioMode == wf.Mode {
 		return ""
 	}
 	return "(radio " + wf.RadioMode + ")"
 }
 
-// clientsNode names the unit a client is connected to.
-func clientsNode(name string, mac amplifi.MAC) string {
+// clientsUnit names the unit a client is connected to.
+func clientsUnit(name string, mac amplifi.MAC) string {
 	return cmp.Or(name, mac.String())
 }
 
 func clientsSignal(n clients.Client) string {
-	if n.Wifi == nil {
+	if n.WiFi == nil {
 		return "-"
 	}
-	return fmt.Sprint(n.Wifi.Signal)
+	return fmt.Sprint(n.WiFi.Signal)
 }
 
 func clientsStatus(n clients.Client) string {
@@ -415,13 +414,6 @@ func clientsLabel(n clients.Client) string {
 		return n.MAC.String()
 	}
 	return fmt.Sprintf("%s (%s)", n.Name, n.MAC)
-}
-
-func clientsIP(ip net.IP) string {
-	if ip == nil {
-		return ""
-	}
-	return ip.String()
 }
 
 // clientsFilterKey keeps the entry of m whose MAC address key matches mac.

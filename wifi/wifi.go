@@ -55,6 +55,10 @@ const (
 	cfgIoTEncryption      = "64"
 )
 
+// ChannelAuto is the channel value for automatic selection. Units also
+// report 0 for automatic.
+const ChannelAuto = -1
+
 // SiteConfigOption codes for the guest network limits.
 const (
 	siteGuestClientLimit = "6"
@@ -86,10 +90,10 @@ type NetworkUpdate struct {
 	Encryption *Encryption
 }
 
-// Configuration is the unit's Wi-Fi configuration. Channel -1 (or 0) means
-// automatic. Fields holds every option code returned, so unmapped ones are
-// still visible.
-type Configuration struct {
+// Config is the unit's Wi-Fi configuration. Channel ChannelAuto (or 0)
+// means automatic. Fields holds every option code returned, so unmapped ones
+// are still visible.
+type Config struct {
 	Main             Network        `json:"main"`
 	Guest            Network        `json:"guest"`
 	IoT              Network        `json:"iot"`
@@ -100,10 +104,10 @@ type Configuration struct {
 	ActiveBand       string         `json:"active_band,omitempty"`
 	Country          string         `json:"country"`
 	RuntimeCountry   string         `json:"runtime_country"`
-	Channel24        int64          `json:"channel_24"`
-	Channel5         int64          `json:"channel_5"`
-	RuntimeChannel24 int64          `json:"runtime_channel_24"`
-	RuntimeChannel5  int64          `json:"runtime_channel_5"`
+	Channel24        int            `json:"channel_24"`
+	Channel5         int            `json:"channel_5"`
+	RuntimeChannel24 int            `json:"runtime_channel_24"`
+	RuntimeChannel5  int            `json:"runtime_channel_5"`
 	FastRoaming      bool           `json:"80211r"`
 	RadioMeasurement bool           `json:"80211k"`
 	BSSTransition    bool           `json:"80211v"`
@@ -116,7 +120,7 @@ type Configuration struct {
 
 // Redacted returns a copy of w with every password masked, including those
 // in Fields.
-func (w Configuration) Redacted() Configuration {
+func (w Config) Redacted() Config {
 	w.Main = w.Main.Redacted()
 	w.Guest = w.Guest.Redacted()
 	w.IoT = w.IoT.Redacted()
@@ -126,7 +130,7 @@ func (w Configuration) Redacted() Configuration {
 }
 
 // ConfigUpdate changes the Wi-Fi configuration. Nil fields are left as they
-// are. A channel of -1 selects the channel automatically.
+// are. A channel of ChannelAuto selects the channel automatically.
 type ConfigUpdate struct {
 	Main             NetworkUpdate
 	Guest            NetworkUpdate
@@ -217,9 +221,9 @@ func (u ConfigUpdate) changes() (map[string]any, error) {
 	return m, nil
 }
 
-// Config fetches the unit's Wi-Fi configuration (Device.GetWifiConfig). It
-// includes the passwords; see Configuration.Redacted.
-func Config(ctx context.Context, c *amplifi.Client) (*Configuration, error) {
+// GetConfig fetches the unit's Wi-Fi configuration (Device.GetWifiConfig).
+// It includes the passwords; see Config.Redacted.
+func GetConfig(ctx context.Context, c *amplifi.Client) (*Config, error) {
 	m, err := rpc.Map(ctx, c, amplifi.IfaceDevice, "GetWifiConfig", rpc.Null)
 	if err != nil {
 		return nil, fmt.Errorf("wifi config: %w", err)
@@ -227,8 +231,8 @@ func Config(ctx context.Context, c *amplifi.Client) (*Configuration, error) {
 	return parseConfig(m), nil
 }
 
-func parseConfig(m map[string]any) *Configuration {
-	return &Configuration{
+func parseConfig(m map[string]any) *Config {
+	return &Config{
 		Main:             mainCodes.parse(m),
 		Guest:            guestCodes.parse(m),
 		IoT:              iotCodes.parse(m),
@@ -239,10 +243,10 @@ func parseConfig(m map[string]any) *Configuration {
 		ActiveBand:       rpc.Name(rpc.BandNames, m, cfgActiveBand),
 		Country:          rpc.String(m, cfgCountry),
 		RuntimeCountry:   rpc.String(m, cfgRuntimeCountry),
-		Channel24:        rpc.Int(m, cfgChannel24),
-		Channel5:         rpc.Int(m, cfgChannel5),
-		RuntimeChannel24: rpc.Int(m, cfgRuntimeChannel24),
-		RuntimeChannel5:  rpc.Int(m, cfgRuntimeChannel5),
+		Channel24:        int(rpc.Int(m, cfgChannel24)),
+		Channel5:         int(rpc.Int(m, cfgChannel5)),
+		RuntimeChannel24: int(rpc.Int(m, cfgRuntimeChannel24)),
+		RuntimeChannel5:  int(rpc.Int(m, cfgRuntimeChannel5)),
 		FastRoaming:      rpc.Bool(m, cfg80211r),
 		RadioMeasurement: rpc.Bool(m, cfg80211k),
 		BSSTransition:    rpc.Bool(m, cfg80211v),
@@ -270,18 +274,19 @@ func UpdateConfig(ctx context.Context, c *amplifi.Client, u ConfigUpdate) error 
 	return nil
 }
 
-// GuestNetwork is the guest network and its limits. The limits live in the
-// mesh-wide site configuration. Their units are unknown; DurationLimit is
-// probably minutes and DisableTime a timestamp.
-type GuestNetwork struct {
+// Guest is the guest network and its limits. The limits live in the
+// mesh-wide site configuration. DurationLimit and DisableTime are the
+// router's raw values; their units are unconfirmed (DurationLimit is
+// probably minutes, DisableTime a timestamp).
+type Guest struct {
 	Network
-	ClientLimit   int64  `json:"client_limit"`
-	DurationLimit int64  `json:"duration_limit"`
+	ClientLimit   int    `json:"client_limit"`
+	DurationLimit int    `json:"duration_limit"`
 	DisableTime   string `json:"disable_time,omitempty"`
 }
 
 // Redacted returns a copy of g with the password masked.
-func (g GuestNetwork) Redacted() GuestNetwork {
+func (g Guest) Redacted() Guest {
 	g.Network = g.Network.Redacted()
 	return g
 }
@@ -294,10 +299,10 @@ type GuestUpdate struct {
 	DisableTime   *string
 }
 
-// Guest fetches the guest network (Device.GetWifiConfig) and its limits
+// GetGuest fetches the guest network (Device.GetWifiConfig) and its limits
 // (ClusterNode.GetSiteConfig).
-func Guest(ctx context.Context, c *amplifi.Client) (*GuestNetwork, error) {
-	w, err := Config(ctx, c)
+func GetGuest(ctx context.Context, c *amplifi.Client) (*Guest, error) {
+	w, err := GetConfig(ctx, c)
 	if err != nil {
 		return nil, err
 	}
@@ -305,10 +310,10 @@ func Guest(ctx context.Context, c *amplifi.Client) (*GuestNetwork, error) {
 	if err != nil {
 		return nil, fmt.Errorf("guest limits: %w", err)
 	}
-	return &GuestNetwork{
+	return &Guest{
 		Network:       w.Guest,
-		ClientLimit:   rpc.Int(site, siteGuestClientLimit),
-		DurationLimit: rpc.Int(site, siteGuestDuration),
+		ClientLimit:   int(rpc.Int(site, siteGuestClientLimit)),
+		DurationLimit: int(rpc.Int(site, siteGuestDuration)),
 		DisableTime:   rpc.String(site, siteGuestDisableTime),
 	}, nil
 }
@@ -360,9 +365,9 @@ func UpdateGuest(ctx context.Context, c *amplifi.Client, u GuestUpdate) error {
 	return nil
 }
 
-// IoT fetches the IoT network. It has no password of its own.
-func IoT(ctx context.Context, c *amplifi.Client) (*Network, error) {
-	w, err := Config(ctx, c)
+// GetIoT fetches the IoT network. It has no password of its own.
+func GetIoT(ctx context.Context, c *amplifi.Client) (*Network, error) {
+	w, err := GetConfig(ctx, c)
 	if err != nil {
 		return nil, err
 	}

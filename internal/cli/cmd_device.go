@@ -15,7 +15,7 @@ import (
 type deviceCmd struct {
 	Info         deviceInfoCmd         `kong:"cmd,help='show the system board'"`
 	Firmware     deviceFirmwareCmd     `kong:"cmd,help='show the running firmware and any pending upgrade'"`
-	Perf         devicePerfCmd         `kong:"cmd,help='show current and peak WAN throughput'"`
+	Throughput   deviceThroughputCmd   `kong:"cmd,aliases='perf',help='show current and peak WAN throughput'"`
 	MACs         deviceMACsCmd         `kong:"cmd,name='macs',help='list the unit\\'s MAC addresses by interface'"`
 	Config       deviceConfigCmd       `kong:"cmd,help='show the device configuration (identity, locale, role)'"`
 	Props        devicePropsCmd        `kong:"cmd,help='show every known property'"`
@@ -32,7 +32,7 @@ type deviceInfoCmd struct {
 // Run prints the system board info.
 func (c *deviceInfoCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		info, err := device.Board(ctx, cl)
+		info, err := device.GetBoard(ctx, cl)
 		if err != nil {
 			return err
 		}
@@ -60,7 +60,7 @@ type deviceFirmwareCmd struct {
 // Run prints the firmware versions.
 func (c *deviceFirmwareCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		fw, err := device.Firmware(ctx, cl)
+		fw, err := device.GetFirmware(ctx, cl)
 		if err != nil {
 			return err
 		}
@@ -76,14 +76,14 @@ func (c *deviceFirmwareCmd) Run(opt *Options) error {
 	})
 }
 
-type devicePerfCmd struct {
+type deviceThroughputCmd struct {
 	unitFlags `kong:"embed"`
 }
 
 // Run prints the throughput counters.
-func (c *devicePerfCmd) Run(opt *Options) error {
+func (c *deviceThroughputCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		p, err := device.Performance(ctx, cl)
+		p, err := device.GetThroughput(ctx, cl)
 		if err != nil {
 			return err
 		}
@@ -91,8 +91,8 @@ func (c *devicePerfCmd) Run(opt *Options) error {
 			return printJSON(p)
 		}
 		return printPairs(os.Stdout, [][2]string{
-			{"rx", mbit(p.Rx)}, {"tx", mbit(p.Tx)},
-			{"rx peak", mbit(p.RxMax)}, {"tx peak", mbit(p.TxMax)},
+			{"rx", mbit(p.RxKbps)}, {"tx", mbit(p.TxKbps)},
+			{"rx peak", mbit(p.RxMaxKbps)}, {"tx peak", mbit(p.TxMaxKbps)},
 		})
 	})
 }
@@ -127,7 +127,7 @@ type deviceConfigCmd struct {
 // Run prints the device configuration.
 func (c *deviceConfigCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		cfg, err := device.Config(ctx, cl)
+		cfg, err := device.GetConfig(ctx, cl)
 		if err != nil {
 			return err
 		}
@@ -145,7 +145,7 @@ func (c *deviceConfigCmd) Run(opt *Options) error {
 			{"system name", cfg.SystemName},
 			{"unique name", cfg.UniqueName},
 			{"board", fmt.Sprintf("%s rev %d", cfg.BoardName, cfg.BoardRevision)},
-			{"role", cfg.NodeRole},
+			{"role", string(cfg.Role)},
 			{"connectivity", cfg.ConnectivityMode},
 			{"country", cfg.Country},
 			{"timezone", cfg.Timezone},
@@ -245,7 +245,7 @@ type deviceDisplayShowCmd struct {
 // Run prints the display settings.
 func (c *deviceDisplayShowCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		d, err := device.Display(ctx, cl)
+		d, err := device.GetDisplay(ctx, cl)
 		if err != nil {
 			return err
 		}
@@ -257,7 +257,7 @@ func (c *deviceDisplayShowCmd) Run(opt *Options) error {
 }
 
 // deviceDisplayRows lists the display settings in a fixed order.
-func deviceDisplayRows(d *device.DisplaySettings) [][2]string {
+func deviceDisplayRows(d *device.Display) [][2]string {
 	return [][2]string{
 		{"sound volume", fmt.Sprint(d.SystemSoundVolume)},
 		{"tap volume", fmt.Sprint(d.TapSoundVolume)},
@@ -283,62 +283,44 @@ type deviceDisplaySetCmd struct {
 	ClockTimeout  *int       `kong:"help='clock timeout (raw router value)'"`
 	OffTimeout    *int       `kong:"help='screen off timeout (raw router value)'"`
 	NightMode     *onOffFlag `kong:"help='dim the display at night (on|off)',placeholder='on|off'"`
-	NightStart    string     `kong:"help='night mode start, HH:MM'"`
-	NightEnd      string     `kong:"help='night mode end, HH:MM'"`
+	NightStart    *string    `kong:"help='night mode start, HH:MM'"`
+	NightEnd      *string    `kong:"help='night mode end, HH:MM'"`
 }
 
 // Run changes the display settings after showing the change.
 func (c *deviceDisplaySetCmd) Run(opt *Options) error {
-	return apply(opt, &c.unitFlags, c.yesFlag, "change the display settings on "+c.Host+"?", device.Display,
-		func(cs *changeSet, cur *device.DisplaySettings) writeFunc {
-			u := c.update(cs)
-			next := u.Apply(*cur)
-			before, after := deviceDisplayRows(cur), deviceDisplayRows(&next)
-			for i := range before {
-				cs.add(before[i][0], before[i][1], after[i][1])
+	return apply(opt, &c.unitFlags, c.yesFlag, "change the display settings on "+c.Host+"?", device.GetDisplay,
+		func(cs *changeSet, cur *device.Display) writeFunc {
+			u := device.DisplayUpdate{
+				SystemSoundVolume: cs.number("sound volume", c.SoundVolume, cur.SystemSoundVolume),
+				TapSoundVolume:    cs.number("tap volume", c.TapVolume, cur.TapSoundVolume),
+				LCDBrightness:     cs.number("lcd brightness", c.LCDBrightness, cur.LCDBrightness),
+				LEDBrightness:     cs.number("led brightness", c.LEDBrightness, cur.LEDBrightness),
+				ClockType:         cs.number("clock type", c.ClockType, cur.ClockType),
+				ClockTimeout:      cs.number("clock timeout", c.ClockTimeout, cur.ClockTimeout),
+				OffTimeout:        cs.number("off timeout", c.OffTimeout, cur.OffTimeout),
+				NightMode:         cs.onOff("night mode", c.NightMode, cur.NightMode),
+				NightStart:        cs.clock("night start", c.NightStart, cur.NightStart),
+				NightEnd:          cs.clock("night end", c.NightEnd, cur.NightEnd),
 			}
 			return func(ctx context.Context, cl *amplifi.Client) error { return device.UpdateDisplay(ctx, cl, u) }
 		})
 }
 
-// update builds the display change from the flags, recording invalid flag
-// values in cs.
-func (c *deviceDisplaySetCmd) update(cs *changeSet) device.DisplayUpdate {
-	u := device.DisplayUpdate{
-		SystemSoundVolume: c.SoundVolume,
-		TapSoundVolume:    c.TapVolume,
-		LCDBrightness:     c.LCDBrightness,
-		LEDBrightness:     c.LEDBrightness,
-		ClockType:         c.ClockType,
-		ClockTimeout:      c.ClockTimeout,
-		OffTimeout:        c.OffTimeout,
-		NightStart:        deviceOptionalClock(cs, "night start", c.NightStart),
-		NightEnd:          deviceOptionalClock(cs, "night end", c.NightEnd),
-	}
-	if c.NightMode != nil {
-		on := bool(*c.NightMode)
-		u.NightMode = &on
-	}
-	return u
+// resetFlag is embedded by factory reset commands. It is separate from
+// --yes, so a habitual -y does not skip typing the unit's name.
+type resetFlag struct {
+	YesReally bool `kong:"name='yes-really',help='do not ask to type the unit name (irreversible)'"`
 }
 
-// deviceOptionalClock parses an optional HH:MM flag; empty means unchanged
-// and yields nil.
-func deviceOptionalClock(cs *changeSet, field, s string) *int {
-	if s == "" {
-		return nil
-	}
-	minutes, err := parseClock(s)
-	if err != nil {
-		cs.fail(field, err)
-		return nil
-	}
-	return &minutes
+// confirmName asks the user to type name, unless --yes-really was given.
+func (r resetFlag) confirmName(name string) bool {
+	return yesFlag{Yes: r.YesReally}.confirmName(name)
 }
 
 type deviceFactoryResetCmd struct {
 	unitFlags `kong:"embed"`
-	yesFlag   `kong:"embed"`
+	resetFlag `kong:"embed"`
 }
 
 // Run factory resets the unit after the user types its name.

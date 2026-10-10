@@ -2,7 +2,11 @@ package device
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/borud/amplifi"
 )
 
 func TestParseMACs(t *testing.T) {
@@ -52,11 +56,14 @@ func TestParseConfig(t *testing.T) {
 	})
 	if !cfg.InitialSetupDone || cfg.FirmwareUpgradeAvailable || cfg.ProtocolVersion != 14 ||
 		cfg.FriendlyName != "router" || cfg.BoardRevision != 2 || cfg.Country != "US" ||
-		cfg.NodeRole != "router" || cfg.ConnectivityMode != "wired" || cfg.Fields["99"] != "extra" {
+		cfg.Role != amplifi.RoleRouter || cfg.ConnectivityMode != "wired" || cfg.Fields["99"] != "extra" {
 		t.Fatalf("unexpected config: %+v", cfg)
 	}
 
-	if cfg := parseConfig(map[string]any{}); cfg.NodeRole != "" || cfg.ConnectivityMode != "" {
+	if cfg := parseConfig(map[string]any{"15": int8(2)}); cfg.Role != amplifi.RoleMeshPoint {
+		t.Fatalf("mesh point role: %q", cfg.Role)
+	}
+	if cfg := parseConfig(map[string]any{}); cfg.Role != "" || cfg.ConnectivityMode != "" {
 		t.Fatalf("missing options should be empty: %+v", cfg)
 	}
 }
@@ -66,19 +73,27 @@ func TestParseDisplay(t *testing.T) {
 		"1": int8(50), "2": int8(10), "3": uint8(80), "4": int8(20), "5": int8(1),
 		"6": int16(300), "7": int16(600), "8": int16(1320), "9": int16(420), "10": true,
 	})
-	want := DisplaySettings{
+	want := Display{
 		SystemSoundVolume: 50, TapSoundVolume: 10, LCDBrightness: 80, LEDBrightness: 20, ClockType: 1,
-		ClockTimeout: 300, OffTimeout: 600, NightStart: 1320, NightEnd: 420, NightMode: true,
+		ClockTimeout: 300, OffTimeout: 600, NightStart: 22 * time.Hour, NightEnd: 7 * time.Hour, NightMode: true,
 	}
 	if *d != want {
 		t.Fatalf("got %+v, want %+v", *d, want)
 	}
+
+	b, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"night_start":79200`) || !strings.Contains(string(b), `"night_end":25200`) {
+		t.Fatalf("night times not in seconds: %s", b)
+	}
 }
 
 func TestDisplayUpdateOptions(t *testing.T) {
-	lcd, off := 40, false
-	changes := DisplayUpdate{LCDBrightness: &lcd, NightMode: &off}.options()
-	if len(changes) != 2 || changes["3"] != 40 || changes["10"] != false {
+	lcd, off, start := 40, false, 21*time.Hour+30*time.Minute+59*time.Second
+	changes := DisplayUpdate{LCDBrightness: &lcd, NightMode: &off, NightStart: &start}.options()
+	if len(changes) != 3 || changes["3"] != 40 || changes["10"] != false || changes["8"] != int64(1290) {
 		t.Fatalf("unexpected changes: %v", changes)
 	}
 	if len(DisplayUpdate{}.options()) != 0 {
@@ -86,10 +101,18 @@ func TestDisplayUpdateOptions(t *testing.T) {
 	}
 }
 
-func TestDisplayUpdateApply(t *testing.T) {
-	start, on := 1320, true
-	d := DisplayUpdate{NightStart: &start, NightMode: &on}.Apply(DisplaySettings{NightStart: 60, LCDBrightness: 80})
-	if d.NightStart != 1320 || !d.NightMode || d.LCDBrightness != 80 {
-		t.Fatalf("unexpected settings: %+v", d)
+func TestHealth(t *testing.T) {
+	var c InternetCheck
+	if err := json.Unmarshal([]byte(`{"inet_status":3,"ipv6_inet_status":1}`), &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Health != HealthGreen || c.IPv6Health != HealthRed || Health(9).String() != "#9" {
+		t.Fatalf("got %v %v", c.Health, c.IPv6Health)
+	}
+	if h, err := ParseHealth("Yellow"); err != nil || h != HealthYellow {
+		t.Fatalf("parse: %v, %v", h, err)
+	}
+	if _, err := ParseHealth("blue"); err == nil {
+		t.Fatal("unknown health accepted")
 	}
 }

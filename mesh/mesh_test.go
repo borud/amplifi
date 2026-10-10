@@ -2,6 +2,7 @@ package mesh
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +16,7 @@ func TestParsePeer(t *testing.T) {
 	master := []byte{0x00, 0x00, 0x5e, 0x00, 0x53, 0x0c}
 	p := parsePeer(mac, []any{"office", int8(2), []byte{192, 0, 2, 15}, uint32(3600), int8(0), int8(2), int8(-61), master})
 
-	if p.Name != "office" || p.Role != "extender" || p.IP.String() != "192.0.2.15" ||
+	if p.Name != "office" || p.Role != amplifi.RoleMeshPoint || p.IP.String() != "192.0.2.15" ||
 		p.Uptime != time.Hour || p.Band != "5GHz" || p.RSSI != -61 ||
 		p.MAC.String() != "00:00:5e:00:53:1b" || p.Master.String() != "00:00:5e:00:53:0c" {
 		t.Fatalf("unexpected peer: %+v", p)
@@ -32,7 +33,7 @@ func TestParsePeer(t *testing.T) {
 
 func TestParsePeerShort(t *testing.T) {
 	p := parsePeer("\x00\x00\x00\x00\x00\x01", []any{"router", int8(1)})
-	if p.Role != "router" || p.IP != nil || p.Band != defaultPeerBand || p.RSSI != defaultPeerRSSI || p.Master != nil {
+	if p.Role != amplifi.RoleRouter || p.IP.IsValid() || p.Band != defaultPeerBand || p.RSSI != defaultPeerRSSI || p.Master != nil {
 		t.Fatalf("unexpected peer: %+v", p)
 	}
 
@@ -45,23 +46,23 @@ func TestParsePeerShort(t *testing.T) {
 	}
 }
 
-func TestParseNodes(t *testing.T) {
+func TestParseUnits(t *testing.T) {
 	m := map[string]any{
 		"\x00\x00\x00\x00\x00\x02": []any{"office", int8(2), "AFi-P-HD"},
 		"\x00\x00\x00\x00\x00\x01": []any{"router", int8(1)},
 		"\x00\x00\x00\x00\x00\x03": []any{"broken"},
 		"\x00\x00\x00\x00\x00\x04": []any{int8(1), int8(2)},
 	}
-	nodes := parseNodes(m)
-	if len(nodes) != 2 {
-		t.Fatalf("got %d nodes, want 2: %+v", len(nodes), nodes)
+	units := parseUnits(m)
+	if len(units) != 2 {
+		t.Fatalf("got %d units, want 2: %+v", len(units), units)
 	}
-	if nodes[0].Name != "router" || nodes[0].Role != "router" || nodes[0].Platform != "" {
-		t.Errorf("unexpected router: %+v", nodes[0])
+	if units[0].Name != "router" || units[0].Role != amplifi.RoleRouter || units[0].Platform != "" {
+		t.Errorf("unexpected router: %+v", units[0])
 	}
-	if nodes[1].Name != "office" || nodes[1].Role != "extender" || nodes[1].Platform != "AFi-P-HD" ||
-		nodes[1].MAC.String() != "00:00:00:00:00:02" {
-		t.Errorf("unexpected extender: %+v", nodes[1])
+	if units[1].Name != "office" || units[1].Role != amplifi.RoleMeshPoint || units[1].Platform != "AFi-P-HD" ||
+		units[1].MAC.String() != "00:00:00:00:00:02" {
+		t.Errorf("unexpected mesh point: %+v", units[1])
 	}
 }
 
@@ -95,9 +96,9 @@ func TestFlattenPorts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ports) != 2 || ports[0].Port != "2" || !ports[0].Link || ports[0].LinkSpeed != 1000 ||
-		ports[0].RxBitrate != 12 || ports[0].TxBitrate != 34 || ports[1].Port != "10" || ports[1].Link ||
-		ports[0].Node.String() != "00:00:5e:00:53:0c" {
+	if len(ports) != 2 || ports[0].Port != "2" || !ports[0].Link || ports[0].LinkSpeedMbps != 1000 ||
+		ports[0].RxKbps != 12 || ports[0].TxKbps != 34 || ports[1].Port != "10" || ports[1].Link ||
+		ports[0].Unit.String() != "00:00:5e:00:53:0c" {
 		t.Fatalf("unexpected ports: %+v", ports)
 	}
 
@@ -121,6 +122,28 @@ func TestCollectMACs(t *testing.T) {
 	}
 	if _, err := collectMACs("x"); err == nil {
 		t.Fatal("expected error for a string")
+	}
+}
+
+func TestCompareUnits(t *testing.T) {
+	if compareUnits(amplifi.RoleMeshPoint, "a", amplifi.RoleRouter, "z") <= 0 ||
+		compareUnits(amplifi.RoleRouter, "z", amplifi.RoleMeshPoint, "a") >= 0 ||
+		compareUnits(amplifi.RoleMeshPoint, "a", "#3", "b") >= 0 {
+		t.Fatal("router not first, or the rest not by name")
+	}
+}
+
+func TestPairingList(t *testing.T) {
+	var m map[string]pairingEntry
+	if err := json.Unmarshal([]byte(`{"00:00:5E:00:53:2A": {"friendly_name": "office", "state": "pending"}, "x": {}}`), &m); err != nil {
+		t.Fatal(err)
+	}
+
+	got := pairingList(m)
+	mac, _ := amplifi.ParseMAC("00:00:5e:00:53:2a")
+	want := []Pairing{{PeerID: "00:00:5E:00:53:2A", MAC: mac, Name: "office", State: "pending"}, {PeerID: "x"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %+v", got)
 	}
 }
 

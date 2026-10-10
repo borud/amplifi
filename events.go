@@ -65,10 +65,6 @@ func (c *Client) Events(ctx context.Context) iter.Seq2[Event, error] {
 	}
 }
 
-// Signals is Events, kept until mesh.Ports moves to Events; removed after
-// merge.
-func (c *Client) Signals(ctx context.Context) iter.Seq2[Event, error] { return c.Events(ctx) }
-
 // event converts a signal message.
 func (c *Client) event(resp wire.Response) Event {
 	e := Event{

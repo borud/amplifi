@@ -24,7 +24,7 @@ type siteShowCmd struct {
 // Run prints the site configuration.
 func (c *siteShowCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		s, err := system.Site(ctx, cl)
+		s, err := system.GetSite(ctx, cl)
 		if err != nil {
 			return err
 		}
@@ -39,12 +39,12 @@ func (c *siteShowCmd) Run(opt *Options) error {
 	})
 }
 
-func sitePrint(s *system.SiteConfig) error {
+func sitePrint(s *system.Site) error {
 	rows := [][2]string{
-		{"site id", strconv.FormatInt(s.SiteID, 10)},
+		{"site id", strconv.Itoa(s.SiteID)},
 		{"country", s.Country},
 		{"time zone", s.ZoneName + "  (" + s.Timezone + ")"},
-		{"clock type", strconv.FormatInt(s.ClockType, 10)},
+		{"clock type", strconv.Itoa(s.ClockType)},
 		{"band steering", onOff(s.BandSteering)},
 		{"router steering", onOff(s.RouterSteering)},
 		{"multiple hops", onOff(s.MultipleHops)},
@@ -54,11 +54,11 @@ func sitePrint(s *system.SiteConfig) error {
 		{"WPS from LCD", onOff(s.WPSFromLCD)},
 		{"accept QoS overhead", onOff(s.AcceptQoSOverhead)},
 		{"accept DFS interruptions", onOff(s.AcceptDFS)},
-		{"guest client limit", strconv.FormatInt(s.GuestClientLimit, 10)},
-		{"guest duration limit", strconv.FormatInt(s.GuestDurationLimit, 10)},
+		{"guest client limit", strconv.Itoa(s.GuestClientLimit)},
+		{"guest duration limit", strconv.Itoa(s.GuestDurationLimit)},
 		{"guest disable time", s.GuestDisableTime},
-		{"friend client limit", strconv.FormatInt(s.FriendClientLimit, 10)},
-		{"friend duration limit", strconv.FormatInt(s.FriendDurationLimit, 10)},
+		{"friend client limit", strconv.Itoa(s.FriendClientLimit)},
+		{"friend duration limit", strconv.Itoa(s.FriendDurationLimit)},
 		{"friend disable time", s.FriendDisableTime},
 	}
 	for _, k := range slices.Sorted(maps.Keys(s.Secrets)) {
@@ -75,26 +75,22 @@ type siteSetCmd struct {
 	WPSFromLCD          *onOffFlag `kong:"name='wps-from-lcd',help='allow starting WPS from the touchscreen (on|off)',placeholder='on|off'"`
 	AcceptQoSOverhead   *onOffFlag `kong:"name='accept-qos-overhead',help='accept the QoS throughput overhead (on|off)',placeholder='on|off'"`
 	AcceptDFS           *onOffFlag `kong:"name='accept-dfs-interruptions',help='use DFS channels and accept radar interruptions (on|off)',placeholder='on|off'"`
-	GuestClientLimit    *int       `kong:"help='maximum number of guest Wi-Fi clients'"`
-	GuestDurationLimit  *int       `kong:"help='guest Wi-Fi duration limit (raw router value)'"`
 	FriendClientLimit   *int       `kong:"help='maximum number of friend Wi-Fi clients'"`
 	FriendDurationLimit *int       `kong:"help='friend Wi-Fi duration limit (raw router value)'"`
 }
 
 // Run changes the site configuration after showing the change.
 func (c *siteSetCmd) Run(opt *Options) error {
-	return apply(opt, &c.unitFlags, c.yesFlag, "apply these changes to the whole mesh?", system.Site, c.plan)
+	return apply(opt, &c.unitFlags, c.yesFlag, "apply these changes to the whole mesh?", system.GetSite, c.plan)
 }
 
-func (c *siteSetCmd) plan(cs *changeSet, s *system.SiteConfig) writeFunc {
+func (c *siteSetCmd) plan(cs *changeSet, s *system.Site) writeFunc {
 	u := system.SiteUpdate{
 		ZoneName:            cs.text("time zone", c.Timezone, s.ZoneName),
 		ClockType:           cs.number("clock type", c.ClockType, s.ClockType),
 		WPSFromLCD:          cs.onOff("WPS from LCD", c.WPSFromLCD, s.WPSFromLCD),
 		AcceptQoSOverhead:   cs.onOff("accept QoS overhead", c.AcceptQoSOverhead, s.AcceptQoSOverhead),
 		AcceptDFS:           cs.onOff("accept DFS interruptions", c.AcceptDFS, s.AcceptDFS),
-		GuestClientLimit:    cs.number("guest client limit", c.GuestClientLimit, s.GuestClientLimit),
-		GuestDurationLimit:  cs.number("guest duration limit", c.GuestDurationLimit, s.GuestDurationLimit),
 		FriendClientLimit:   cs.number("friend client limit", c.FriendClientLimit, s.FriendClientLimit),
 		FriendDurationLimit: cs.number("friend duration limit", c.FriendDurationLimit, s.FriendDurationLimit),
 	}

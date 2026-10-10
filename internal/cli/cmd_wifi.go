@@ -4,9 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"maps"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -43,12 +41,12 @@ type wifiIoTCmd struct {
 }
 
 type wifiRadiosCmd struct {
-	Show wifiRadiosShowCmd `kong:"cmd,help='list the radios'"`
+	List wifiRadiosListCmd `kong:"cmd,aliases='ls',help='list the radios'"`
 	Set  wifiRadiosSetCmd  `kong:"cmd,help='change a radio'"`
 }
 
 type wifiInterfacesCmd struct {
-	Show wifiInterfacesShowCmd `kong:"cmd,help='list the Wi-Fi interfaces'"`
+	List wifiInterfacesListCmd `kong:"cmd,aliases='ls',help='list the Wi-Fi interfaces'"`
 	Set  wifiInterfacesSetCmd  `kong:"cmd,help='change a Wi-Fi interface'"`
 }
 
@@ -60,7 +58,7 @@ type wifiScanCmd struct {
 
 type wifiWPSCmd struct {
 	Push   wifiWPSPushCmd   `kong:"cmd,help='start push-button pairing'"`
-	Cancel wifiWPSCancelCmd `kong:"cmd,help='stop push-button pairing'"`
+	Stop   wifiWPSStopCmd   `kong:"cmd,aliases='cancel',help='stop push-button pairing'"`
 	Status wifiWPSStatusCmd `kong:"cmd,help='show the push-button pairing state'"`
 }
 
@@ -88,7 +86,7 @@ type wifiShowCmd struct {
 // Run prints the Wi-Fi configuration.
 func (c *wifiShowCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		w, err := wifi.Config(ctx, cl)
+		w, err := wifi.GetConfig(ctx, cl)
 		if err != nil {
 			return err
 		}
@@ -104,7 +102,7 @@ func (c *wifiShowCmd) Run(opt *Options) error {
 	})
 }
 
-func wifiPrintConfig(out io.Writer, w *wifi.Configuration, passwords bool) error {
+func wifiPrintConfig(out io.Writer, w *wifi.Config, passwords bool) error {
 	if err := wifiPrintNetworks(out, passwords, []string{"main", "guest", "iot"}, []wifi.Network{w.Main, w.Guest, w.IoT}); err != nil {
 		return err
 	}
@@ -171,10 +169,10 @@ type wifiSetCmd struct {
 
 // Run changes the given Wi-Fi settings after confirmation.
 func (c *wifiSetCmd) Run(opt *Options) error {
-	return apply(opt, &c.unitFlags, c.yesFlag, "apply these Wi-Fi changes to "+c.Host+"?", wifi.Config, c.plan)
+	return apply(opt, &c.unitFlags, c.yesFlag, "apply these Wi-Fi changes to "+c.Host+"?", wifi.GetConfig, c.plan)
 }
 
-func (c *wifiSetCmd) plan(cs *changeSet, w *wifi.Configuration) writeFunc {
+func (c *wifiSetCmd) plan(cs *changeSet, w *wifi.Config) writeFunc {
 	u := wifi.ConfigUpdate{
 		Main:             c.wifiNetworkFlags.plan(cs, w.Main),
 		BandSteering:     cs.onOff("band steering", c.BandSteering, w.BandSteering),
@@ -204,7 +202,7 @@ type wifiGuestShowCmd struct {
 // Run prints the guest network.
 func (c *wifiGuestShowCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		g, err := wifi.Guest(ctx, cl)
+		g, err := wifi.GetGuest(ctx, cl)
 		if err != nil {
 			return err
 		}
@@ -220,8 +218,8 @@ func (c *wifiGuestShowCmd) Run(opt *Options) error {
 		}
 		fmt.Println()
 		return printPairs(os.Stdout, [][2]string{
-			{"client limit", strconv.FormatInt(g.ClientLimit, 10)},
-			{"duration limit", strconv.FormatInt(g.DurationLimit, 10)},
+			{"client limit", strconv.Itoa(g.ClientLimit)},
+			{"duration limit", strconv.Itoa(g.DurationLimit)},
 			{"disable time", g.DisableTime},
 		})
 	})
@@ -249,8 +247,8 @@ func (c *wifiGuestDisableCmd) Run(opt *Options) error {
 
 func wifiSetGuestEnabled(opt *Options, u *unitFlags, y yesFlag, on bool) error {
 	flag := onOffFlag(on)
-	return apply(opt, u, y, "change the guest network on "+u.Host+"?", wifi.Guest,
-		func(cs *changeSet, g *wifi.GuestNetwork) writeFunc {
+	return apply(opt, u, y, "change the guest network on "+u.Host+"?", wifi.GetGuest,
+		func(cs *changeSet, g *wifi.Guest) writeFunc {
 			upd := wifi.GuestUpdate{NetworkUpdate: wifi.NetworkUpdate{
 				Enabled: cs.onOff("enabled", &flag, g.Enabled),
 			}}
@@ -270,10 +268,10 @@ type wifiGuestSetCmd struct {
 
 // Run changes the given guest network settings after confirmation.
 func (c *wifiGuestSetCmd) Run(opt *Options) error {
-	return apply(opt, &c.unitFlags, c.yesFlag, "change the guest network on "+c.Host+"?", wifi.Guest, c.plan)
+	return apply(opt, &c.unitFlags, c.yesFlag, "change the guest network on "+c.Host+"?", wifi.GetGuest, c.plan)
 }
 
-func (c *wifiGuestSetCmd) plan(cs *changeSet, g *wifi.GuestNetwork) writeFunc {
+func (c *wifiGuestSetCmd) plan(cs *changeSet, g *wifi.Guest) writeFunc {
 	u := wifi.GuestUpdate{
 		NetworkUpdate: c.wifiNetworkFlags.plan(cs, g.Network),
 		ClientLimit:   cs.number("client limit", c.ClientLimit, g.ClientLimit),
@@ -291,7 +289,7 @@ type wifiIoTShowCmd struct {
 // Run prints the IoT network.
 func (c *wifiIoTShowCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		n, err := wifi.IoT(ctx, cl)
+		n, err := wifi.GetIoT(ctx, cl)
 		if err != nil {
 			return err
 		}
@@ -324,7 +322,7 @@ func (c *wifiIoTDisableCmd) Run(opt *Options) error {
 
 func wifiSetIoTEnabled(opt *Options, u *unitFlags, y yesFlag, on bool) error {
 	flag := onOffFlag(on)
-	return apply(opt, u, y, "change the IoT network on "+u.Host+"?", wifi.IoT,
+	return apply(opt, u, y, "change the IoT network on "+u.Host+"?", wifi.GetIoT,
 		func(cs *changeSet, n *wifi.Network) writeFunc {
 			upd := wifi.NetworkUpdate{Enabled: cs.onOff("enabled", &flag, n.Enabled)}
 			return func(ctx context.Context, cl *amplifi.Client) error { return wifi.UpdateIoT(ctx, cl, upd) }
@@ -339,19 +337,19 @@ type wifiIoTSetCmd struct {
 
 // Run changes the given IoT network settings after confirmation.
 func (c *wifiIoTSetCmd) Run(opt *Options) error {
-	return apply(opt, &c.unitFlags, c.yesFlag, "change the IoT network on "+c.Host+"?", wifi.IoT,
+	return apply(opt, &c.unitFlags, c.yesFlag, "change the IoT network on "+c.Host+"?", wifi.GetIoT,
 		func(cs *changeSet, n *wifi.Network) writeFunc {
 			upd := c.wifiNetworkFlags.plan(cs, *n)
 			return func(ctx context.Context, cl *amplifi.Client) error { return wifi.UpdateIoT(ctx, cl, upd) }
 		})
 }
 
-type wifiRadiosShowCmd struct {
+type wifiRadiosListCmd struct {
 	unitFlags `kong:"embed"`
 }
 
 // Run lists the radios.
-func (c *wifiRadiosShowCmd) Run(opt *Options) error {
+func (c *wifiRadiosListCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
 		radios, err := wifi.Radios(ctx, cl)
 		if err != nil {
@@ -380,7 +378,7 @@ func (c *wifiRadiosShowCmd) Run(opt *Options) error {
 type wifiRadiosSetCmd struct {
 	unitFlags `kong:"embed"`
 	yesFlag   `kong:"embed"`
-	Radio     string     `kong:"arg,help='radio name or band, as listed by wifi radios show'"`
+	Radio     string     `kong:"arg,help='radio name or band, as listed by wifi radios list'"`
 	Enabled   *onOffFlag `kong:"help='enable the radio (on|off)',placeholder='on|off'"`
 	Channel   *string    `kong:"help='channel or auto'"`
 	Bandwidth *string    `kong:"help='channel width: 20, 40, 80, 80+80, 160 or max'"`
@@ -414,13 +412,13 @@ func (c *wifiRadiosSetCmd) plan(cs *changeSet, r wifi.Radio) writeFunc {
 	return func(ctx context.Context, cl *amplifi.Client) error { return wifi.UpdateRadio(ctx, cl, r.Name, u) }
 }
 
-type wifiInterfacesShowCmd struct {
+type wifiInterfacesListCmd struct {
 	unitFlags     `kong:"embed"`
 	ShowPasswords bool `kong:"help='include the passwords'"`
 }
 
 // Run lists the Wi-Fi interfaces.
-func (c *wifiInterfacesShowCmd) Run(opt *Options) error {
+func (c *wifiInterfacesListCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
 		ifaces, err := wifi.Interfaces(ctx, cl)
 		if err != nil {
@@ -461,7 +459,7 @@ func (c *wifiInterfacesShowCmd) Run(opt *Options) error {
 type wifiInterfacesSetCmd struct {
 	unitFlags      `kong:"embed"`
 	yesFlag        `kong:"embed"`
-	Interface      string     `kong:"arg,help='interface, as listed by wifi interfaces show'"`
+	Interface      string     `kong:"arg,help='interface, as listed by wifi interfaces list'"`
 	Enabled        *onOffFlag `kong:"help='enable the interface (on|off)',placeholder='on|off'"`
 	SSID           *string    `kong:"name='ssid',help='network name'"`
 	Password       *string    `kong:"name='passphrase',help='network passphrase'"`
@@ -506,27 +504,25 @@ type wifiChannelsCmd struct {
 func (c *wifiChannelsCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
 		if !c.Info {
-			channels, err := wifi.Channels(ctx, cl)
+			channels, err := wifi.AllowedChannels(ctx, cl)
 			if err != nil {
 				return err
 			}
 			return wifiPrintInts(opt, channels)
 		}
 
-		info, err := wifi.ChannelInfo(ctx, cl)
+		channels, err := wifi.Channels(ctx, cl)
 		if err != nil {
 			return err
 		}
 		if opt.JSON() {
-			return printJSON(info)
+			return printJSON(channels)
 		}
 		tw := newTable(os.Stdout)
 		fmt.Fprintln(tw, "BAND\tCHANNEL\tMHZ\tWIDTH\tTX POWER\tRADAR\tDFS STATE")
-		for _, band := range slices.Sorted(maps.Keys(info)) {
-			for _, ch := range info[band] {
-				fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%s\t%s\n",
-					band, ch.Channel, ch.Freq, ch.Width, ch.Power, onOff(ch.Radar), intOrDash(ch.DFSState))
-			}
+		for _, ch := range channels {
+			fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%s\t%s\n",
+				ch.Band, ch.Number, ch.FreqMHz, ch.Width, ch.TxPower, onOff(ch.Radar), intOrDash(ch.DFSState))
 		}
 		return tw.Flush()
 	})
@@ -558,7 +554,7 @@ type wifiRadarCmd struct {
 // Run lists the channels with detected radar.
 func (c *wifiRadarCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		radar, err := wifi.Radar(ctx, cl)
+		radar, err := wifi.GetRadar(ctx, cl)
 		if err != nil {
 			return err
 		}
@@ -604,7 +600,7 @@ type wifiScanShowCmd struct {
 // Run prints the scan results.
 func (c *wifiScanShowCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		entries, err := wifi.Scan(ctx, cl)
+		entries, err := wifi.ScanResults(ctx, cl)
 		if err != nil {
 			return err
 		}
@@ -631,14 +627,14 @@ func (c *wifiWPSPushCmd) Run(opt *Options) error {
 	return c.run(opt, c.yesFlag, prompt, wifi.StartWPS)
 }
 
-type wifiWPSCancelCmd struct {
+type wifiWPSStopCmd struct {
 	unitFlags `kong:"embed"`
 	yesFlag   `kong:"embed"`
 }
 
 // Run stops WPS push-button pairing.
-func (c *wifiWPSCancelCmd) Run(opt *Options) error {
-	return c.run(opt, c.yesFlag, fmt.Sprintf("cancel WPS push-button pairing on %s?", c.Host), wifi.CancelWPS)
+func (c *wifiWPSStopCmd) Run(opt *Options) error {
+	return c.run(opt, c.yesFlag, fmt.Sprintf("stop WPS push-button pairing on %s?", c.Host), wifi.StopWPS)
 }
 
 type wifiWPSStatusCmd struct {
@@ -648,7 +644,7 @@ type wifiWPSStatusCmd struct {
 // Run prints the WPS pairing state.
 func (c *wifiWPSStatusCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		st, err := wifi.WPSStatus(ctx, cl)
+		st, err := wifi.GetWPSStatus(ctx, cl)
 		if err != nil {
 			return err
 		}
@@ -659,13 +655,13 @@ func (c *wifiWPSStatusCmd) Run(opt *Options) error {
 	})
 }
 
-func wifiPrintInts(opt *Options, list []int64) error {
+func wifiPrintInts(opt *Options, list []int) error {
 	if opt.JSON() {
 		return printJSON(list)
 	}
 	words := make([]string, len(list))
 	for i, n := range list {
-		words[i] = strconv.FormatInt(n, 10)
+		words[i] = strconv.Itoa(n)
 	}
 	fmt.Println(strings.Join(words, " "))
 	return nil

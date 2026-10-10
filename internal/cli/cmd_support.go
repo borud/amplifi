@@ -28,7 +28,7 @@ type systemSupportGenerateCmd struct {
 // Run builds a support bundle and prints its name, size and checksum.
 func (c *systemSupportGenerateCmd) Run(opt *Options) error {
 	return c.session(opt, systemSupportTimeout, func(ctx context.Context, cl *amplifi.Client) error {
-		f, err := system.GenerateSupportInfo(ctx, cl)
+		f, err := system.CreateSupportBundle(ctx, cl)
 		if err != nil {
 			return err
 		}
@@ -53,7 +53,7 @@ type systemSupportDownloadCmd struct {
 func (c *systemSupportDownloadCmd) Run(opt *Options) error {
 	return c.session(opt, c.Wait, func(ctx context.Context, cl *amplifi.Client) error {
 		fmt.Fprintln(os.Stderr, "building support bundle...")
-		f, err := system.GenerateSupportInfo(ctx, cl)
+		f, err := system.CreateSupportBundle(ctx, cl)
 		if err != nil {
 			return err
 		}
@@ -69,7 +69,7 @@ func (c *systemSupportDownloadCmd) Run(opt *Options) error {
 		defer out.Close()
 
 		fmt.Fprintf(os.Stderr, "downloading %s (%d bytes)...\n", f.File, f.Size)
-		if err := system.DownloadSupportInfo(ctx, cl, f, out); err != nil {
+		if err := system.DownloadSupportBundle(ctx, cl, f, out); err != nil {
 			return err
 		}
 		if err := out.Close(); err != nil {

@@ -10,12 +10,12 @@ import (
 	"github.com/borud/amplifi/internal/rpc"
 )
 
-// ScanEntry is one station seen by the signal quality scan.
-type ScanEntry struct {
+// ScanResult is one station seen by the signal quality scan.
+type ScanResult struct {
 	Band    string      `json:"band"`
 	Network string      `json:"network"`
 	MAC     amplifi.MAC `json:"mac"`
-	Quality int64       `json:"quality"`
+	Quality int         `json:"quality"`
 }
 
 // StartScan starts the Wi-Fi signal quality scan
@@ -36,9 +36,9 @@ func StopScan(ctx context.Context, c *amplifi.Client) error {
 	return nil
 }
 
-// Scan fetches the scan results (Device.GetWifiScanSignalQuality, with a
-// [nil, nil] argument), sorted by band, network and MAC.
-func Scan(ctx context.Context, c *amplifi.Client) ([]ScanEntry, error) {
+// ScanResults fetches the scan results (Device.GetWifiScanSignalQuality,
+// with a [nil, nil] argument), sorted by band, network and MAC.
+func ScanResults(ctx context.Context, c *amplifi.Client) ([]ScanResult, error) {
 	m, err := rpc.Map(ctx, c, amplifi.IfaceDevice, "GetWifiScanSignalQuality", rpc.TwoNulls)
 	if err != nil {
 		return nil, fmt.Errorf("wifi scan: %w", err)
@@ -48,15 +48,15 @@ func Scan(ctx context.Context, c *amplifi.Client) ([]ScanEntry, error) {
 
 // parseScan decodes a WifiClientBandMap: band -> network role -> binary MAC
 // -> signal quality.
-func parseScan(m map[string]any) []ScanEntry {
-	entries := []ScanEntry{}
+func parseScan(m map[string]any) []ScanResult {
+	entries := []ScanResult{}
 	for band, roles := range m {
 		for role, stations := range rpc.Submaps(roles) {
 			entries = appendStations(entries, band, role, stations)
 		}
 	}
 
-	slices.SortFunc(entries, func(a, b ScanEntry) int {
+	slices.SortFunc(entries, func(a, b ScanResult) int {
 		return cmp.Or(
 			cmp.Compare(a.Band, b.Band),
 			cmp.Compare(a.Network, b.Network),
@@ -68,13 +68,13 @@ func parseScan(m map[string]any) []ScanEntry {
 
 // appendStations adds the stations (binary MAC -> quality) seen on one band
 // and network.
-func appendStations(entries []ScanEntry, band, role string, stations map[string]any) []ScanEntry {
+func appendStations(entries []ScanResult, band, role string, stations map[string]any) []ScanResult {
 	for mac := range stations {
-		entries = append(entries, ScanEntry{
+		entries = append(entries, ScanResult{
 			Band:    rpc.KeyName(rpc.BandNames, band),
 			Network: rpc.KeyName(rpc.NetworkNames, role),
 			MAC:     rpc.MAC(mac),
-			Quality: rpc.Int(stations, mac),
+			Quality: int(rpc.Int(stations, mac)),
 		})
 	}
 	return entries
@@ -88,17 +88,17 @@ func StartWPS(ctx context.Context, c *amplifi.Client) error {
 	return nil
 }
 
-// CancelWPS stops WPS push-button pairing (Device.WpsPushButtonCancel).
-func CancelWPS(ctx context.Context, c *amplifi.Client) error {
+// StopWPS stops WPS push-button pairing (Device.WpsPushButtonCancel).
+func StopWPS(ctx context.Context, c *amplifi.Client) error {
 	if _, err := c.Call(ctx, amplifi.IfaceDevice, "WpsPushButtonCancel", nil); err != nil {
-		return fmt.Errorf("cancel wps: %w", err)
+		return fmt.Errorf("stop wps: %w", err)
 	}
 	return nil
 }
 
-// WPSStatus reports the WPS push-button state (Device.WpsPushButtonStatus)
+// GetWPSStatus reports the WPS push-button state (Device.WpsPushButtonStatus)
 // as the unit's JSON answer.
-func WPSStatus(ctx context.Context, c *amplifi.Client) (map[string]any, error) {
+func GetWPSStatus(ctx context.Context, c *amplifi.Client) (map[string]any, error) {
 	var out map[string]any
 	if err := rpc.Value(ctx, c, amplifi.IfaceDevice, "WpsPushButtonStatus", nil, &out); err != nil {
 		return nil, fmt.Errorf("wps status: %w", err)

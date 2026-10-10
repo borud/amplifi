@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"time"
 
 	"github.com/borud/amplifi"
@@ -34,7 +33,7 @@ type speedtestRunCmd struct {
 // Run starts a speed test and, with --wait, follows it to the end.
 func (c *speedtestRunCmd) Run(opt *Options) error {
 	return c.session(opt, c.WaitTimeout, func(ctx context.Context, cl *amplifi.Client) error {
-		if err := system.RunSpeedTest(ctx, cl); err != nil {
+		if err := system.StartSpeedTest(ctx, cl); err != nil {
 			return err
 		}
 		if !c.Wait {
@@ -57,7 +56,7 @@ func speedtestWait(ctx context.Context, cl *amplifi.Client, progress bool) (*sys
 	start := time.Now()
 	seen := false
 	for {
-		st, err := system.SpeedTestStatus(ctx, cl)
+		st, err := system.GetSpeedTest(ctx, cl)
 		if err != nil {
 			return nil, err
 		}
@@ -90,7 +89,7 @@ type speedtestStatusCmd struct {
 // Run shows the current or last speed test.
 func (c *speedtestStatusCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		st, err := system.SpeedTestStatus(ctx, cl)
+		st, err := system.GetSpeedTest(ctx, cl)
 		if err != nil {
 			return err
 		}
@@ -115,16 +114,16 @@ func speedtestWrite(w io.Writer, st *system.SpeedTest) error {
 		{"state", state},
 		{"result", speedtestResultName(st.Result)},
 	}
-	if st.Time > 0 {
-		rows = append(rows, [2]string{"time", unixTime(st.Time)})
+	if !st.Time.IsZero() {
+		rows = append(rows, [2]string{"time", timeText(st.Time)})
 	}
 	if server := speedtestServer(st); server != "" {
 		rows = append(rows, [2]string{"server", server})
 	}
 	rows = append(rows,
-		[2]string{"latency", strconv.Itoa(st.Latency) + " ms"},
-		[2]string{"download", mbit(st.Download) + "  (WAN total " + mbit(st.DownloadIface) + ")"},
-		[2]string{"upload", mbit(st.Upload) + "  (WAN total " + mbit(st.UploadIface) + ")"},
+		[2]string{"latency", st.Latency.String()},
+		[2]string{"download", mbit(st.DownloadKbps) + "  (WAN total " + mbit(st.WANDownloadKbps) + ")"},
+		[2]string{"upload", mbit(st.UploadKbps) + "  (WAN total " + mbit(st.WANUploadKbps) + ")"},
 	)
 	return printPairs(w, rows)
 }
@@ -147,8 +146,8 @@ func (c *speedtestHistoryCmd) Run(opt *Options) error {
 		tw := newTable(os.Stdout)
 		fmt.Fprintln(tw, "TIME\tRESULT\tLATENCY\tDOWNLOAD\tUPLOAD\tSERVER")
 		for _, st := range hist {
-			fmt.Fprintf(tw, "%s\t%s\t%d ms\t%s\t%s\t%s\n", unixTime(st.Time),
-				speedtestResultName(st.Result), st.Latency, mbit(st.Download), mbit(st.Upload), speedtestServer(&st))
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", timeText(st.Time),
+				speedtestResultName(st.Result), st.Latency, mbit(st.DownloadKbps), mbit(st.UploadKbps), speedtestServer(&st))
 		}
 		return tw.Flush()
 	})

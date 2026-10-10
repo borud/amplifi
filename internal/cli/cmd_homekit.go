@@ -22,7 +22,7 @@ type systemHomeKitShowCmd struct {
 // Run prints the HomeKit state.
 func (c *systemHomeKitShowCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		h, err := system.HomeKitStatus(ctx, cl)
+		h, err := system.GetHomeKit(ctx, cl)
 		if err != nil {
 			return homekitError(err)
 		}

@@ -1,16 +1,14 @@
 // Package network reads and changes a unit's IP networking: the WAN and LAN
-// configuration, the logical network interfaces, UPnP/NAT-PMP, QoS, the
-// DHCP server's pools and static leases, and port forwarding rules.
+// configuration, the logical network interfaces, UPnP/NAT-PMP and QoS. The
+// DHCP server and port forwarding are in packages dhcp and portforward.
 package network
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
 	"maps"
 	"net/netip"
 	"slices"
-	"strconv"
 
 	"github.com/borud/amplifi"
 	"github.com/borud/amplifi/internal/rpc"
@@ -92,45 +90,45 @@ func protocolName(m map[string]any, key string) string {
 	return rpc.CodeName(protocolNames, n)
 }
 
-// Configuration is the WAN and LAN addressing (GetNetworkConfig).
-// Addresses with a mask are in CIDR form. The Runtime* fields are what is in
-// use right now and cannot be set.
-type Configuration struct {
-	WANType       string      `json:"wan_type"`
-	WANBridge     bool        `json:"wan_bridge"`
-	WANStaticAddr string      `json:"wan_static_addr,omitempty"`
-	WANGateway    string      `json:"wan_gateway,omitempty"`
-	WANDNS        []string    `json:"wan_dns"`
-	WANUsername   string      `json:"wan_username,omitempty"`
-	WANPassword   string      `json:"wan_password,omitempty"`
-	WANVLAN       int         `json:"wan_vlan"`
-	WANMAC        amplifi.MAC `json:"wan_mac,omitempty"`
-	WAN6Protocol  string      `json:"wan6_protocol,omitempty"`
-	WAN6ClientID  string      `json:"wan6_client_id,omitempty"`
-	HWNAT         bool        `json:"hw_nat"`
-	HomeKit       bool        `json:"homekit"`
-	LANGateway    string      `json:"lan_gateway,omitempty"`
-	GuestGateway  string      `json:"guest_gateway,omitempty"`
-	IoTGateway    string      `json:"iot_gateway,omitempty"`
+// Config is the WAN and LAN addressing (GetNetworkConfig). An address the
+// router stores without a prefix length gets a full-length prefix. The
+// Runtime* fields are what is in use right now and cannot be set.
+type Config struct {
+	WANType       string       `json:"wan_type"`
+	WANBridge     bool         `json:"wan_bridge"`
+	WANStaticAddr netip.Prefix `json:"wan_static_addr,omitzero"`
+	WANGateway    netip.Addr   `json:"wan_gateway,omitzero"`
+	WANDNS        []netip.Addr `json:"wan_dns"`
+	WANUsername   string       `json:"wan_username,omitempty"`
+	WANPassword   string       `json:"wan_password,omitempty"`
+	WANVLAN       int          `json:"wan_vlan"`
+	WANMAC        amplifi.MAC  `json:"wan_mac,omitempty"`
+	WAN6Protocol  string       `json:"wan6_protocol,omitempty"`
+	WAN6ClientID  string       `json:"wan6_client_id,omitempty"`
+	HWNAT         bool         `json:"hw_nat"`
+	HomeKit       bool         `json:"homekit"`
+	LANGateway    netip.Prefix `json:"lan_gateway,omitzero"`
+	GuestGateway  netip.Prefix `json:"guest_gateway,omitzero"`
+	IoTGateway    netip.Prefix `json:"iot_gateway,omitzero"`
 
-	WANUp              bool     `json:"wan_up"`
-	RuntimeWANAddress  string   `json:"runtime_wan_address,omitempty"`
-	RuntimeWANGateway  string   `json:"runtime_wan_gateway,omitempty"`
-	RuntimeWANDNS      []string `json:"runtime_wan_dns"`
-	WAN6Up             bool     `json:"wan6_up"`
-	RuntimeWAN6Address []string `json:"runtime_wan6_address"`
-	RuntimeWAN6Gateway []string `json:"runtime_wan6_gateway"`
-	RuntimeWAN6DNS     []string `json:"runtime_wan6_dns"`
+	WANUp              bool           `json:"wan_up"`
+	RuntimeWANAddress  netip.Prefix   `json:"runtime_wan_address,omitzero"`
+	RuntimeWANGateway  netip.Addr     `json:"runtime_wan_gateway,omitzero"`
+	RuntimeWANDNS      []netip.Addr   `json:"runtime_wan_dns"`
+	WAN6Up             bool           `json:"wan6_up"`
+	RuntimeWAN6Address []netip.Prefix `json:"runtime_wan6_address"`
+	RuntimeWAN6Gateway []netip.Addr   `json:"runtime_wan6_gateway"`
+	RuntimeWAN6DNS     []netip.Addr   `json:"runtime_wan6_dns"`
 }
 
 // Redacted returns a copy of cfg with the PPPoE password masked.
-func (cfg Configuration) Redacted() Configuration {
+func (cfg Config) Redacted() Config {
 	cfg.WANPassword = rpc.Mask(cfg.WANPassword)
 	return cfg
 }
 
-// Config fetches the WAN and LAN configuration.
-func Config(ctx context.Context, c *amplifi.Client) (*Configuration, error) {
+// GetConfig fetches the WAN and LAN configuration.
+func GetConfig(ctx context.Context, c *amplifi.Client) (*Config, error) {
 	m, err := rpc.Map(ctx, c, amplifi.IfaceDevice, "GetNetworkConfig", rpc.Null)
 	if err != nil {
 		return nil, fmt.Errorf("network config: %w", err)
@@ -138,13 +136,13 @@ func Config(ctx context.Context, c *amplifi.Client) (*Configuration, error) {
 	return parseConfig(m), nil
 }
 
-func parseConfig(m map[string]any) *Configuration {
-	return &Configuration{
+func parseConfig(m map[string]any) *Config {
+	return &Config{
 		WANType:       protocolName(m, wanType),
 		WANBridge:     rpc.Bool(m, wanBridgeMode),
-		WANStaticAddr: formatAddr(m[wanStaticAddr]),
-		WANGateway:    formatAddr(m[wanGateway]),
-		WANDNS:        formatAddrs(m[wanDNS]),
+		WANStaticAddr: rpc.Prefix(m[wanStaticAddr]),
+		WANGateway:    rpc.Addr(m[wanGateway]),
+		WANDNS:        rpc.Addrs(m[wanDNS]),
 		WANUsername:   rpc.String(m, wanUsername),
 		WANPassword:   rpc.String(m, wanPassword),
 		WANVLAN:       int(rpc.Int(m, wanVLAN)),
@@ -153,33 +151,33 @@ func parseConfig(m map[string]any) *Configuration {
 		WAN6ClientID:  rpc.String(m, wan6ClientID),
 		HWNAT:         rpc.Bool(m, hwNAT),
 		HomeKit:       rpc.Bool(m, homeKit),
-		LANGateway:    formatAddr(m[lanGateway]),
-		GuestGateway:  formatAddr(m[guestGateway]),
-		IoTGateway:    formatAddr(m[iotGateway]),
+		LANGateway:    rpc.Prefix(m[lanGateway]),
+		GuestGateway:  rpc.Prefix(m[guestGateway]),
+		IoTGateway:    rpc.Prefix(m[iotGateway]),
 
 		WANUp:              rpc.Bool(m, wanUp),
-		RuntimeWANAddress:  formatAddr(m[wanRuntimeAddress]),
-		RuntimeWANGateway:  formatAddr(m[wanRuntimeGateway]),
-		RuntimeWANDNS:      formatAddrs(m[wanRuntimeDNS]),
+		RuntimeWANAddress:  rpc.Prefix(m[wanRuntimeAddress]),
+		RuntimeWANGateway:  rpc.Addr(m[wanRuntimeGateway]),
+		RuntimeWANDNS:      rpc.Addrs(m[wanRuntimeDNS]),
 		WAN6Up:             rpc.Bool(m, wan6Up),
-		RuntimeWAN6Address: formatAddrs(m[wan6Address]),
-		RuntimeWAN6Gateway: formatAddrs(m[wan6Gateway]),
-		RuntimeWAN6DNS:     formatAddrs(m[wan6DNS]),
+		RuntimeWAN6Address: rpc.Prefixes(m[wan6Address]),
+		RuntimeWAN6Gateway: rpc.Addrs(m[wan6Gateway]),
+		RuntimeWAN6DNS:     rpc.Addrs(m[wan6DNS]),
 	}
 }
 
 // ConfigUpdate lists the network settings to change; nil fields are left as
-// they are. Addresses with a mask (WANStaticAddr and the gateways of the
-// LAN, guest and IoT networks) are IPv4 CIDR such as "192.168.1.1/24".
+// they are. Addresses must be IPv4; a zero address or prefix clears the
+// setting.
 type ConfigUpdate struct {
 	// WANType is a protocol name, usually "dhcp", "static" or "pppoe".
 	WANType       *string
 	WANBridge     *bool
-	WANStaticAddr *string
-	WANGateway    *string
+	WANStaticAddr *netip.Prefix
+	WANGateway    *netip.Addr
 	// WANDNS replaces the static DNS servers when non-nil; an empty slice
 	// clears them.
-	WANDNS      []string
+	WANDNS      []netip.Addr
 	WANUsername *string
 	WANPassword *string
 	WANVLAN     *int
@@ -189,9 +187,9 @@ type ConfigUpdate struct {
 	WAN6Protocol *string
 	WAN6ClientID *string
 	HWNAT        *bool
-	LANGateway   *string
-	GuestGateway *string
-	IoTGateway   *string
+	LANGateway   *netip.Prefix
+	GuestGateway *netip.Prefix
+	IoTGateway   *netip.Prefix
 }
 
 // UpdateConfig applies u with a read-modify-write of the network
@@ -218,9 +216,9 @@ func (u ConfigUpdate) options() (map[string]any, error) {
 	o := optionSet{m: map[string]any{}}
 	o.protocol(wanType, u.WANType)
 	rpc.Put(o.m, wanBridgeMode, u.WANBridge)
-	o.cidr(wanStaticAddr, u.WANStaticAddr)
-	o.ip(wanGateway, u.WANGateway)
-	o.ips(wanDNS, u.WANDNS)
+	o.prefix(wanStaticAddr, u.WANStaticAddr)
+	o.addr(wanGateway, u.WANGateway)
+	o.addrs(wanDNS, u.WANDNS)
 	rpc.Put(o.m, wanUsername, u.WANUsername)
 	rpc.Put(o.m, wanPassword, u.WANPassword)
 	rpc.PutInt(o.m, wanVLAN, u.WANVLAN)
@@ -228,27 +226,27 @@ func (u ConfigUpdate) options() (map[string]any, error) {
 	o.protocol(wan6Protocol, u.WAN6Protocol)
 	rpc.Put(o.m, wan6ClientID, u.WAN6ClientID)
 	rpc.Put(o.m, hwNAT, u.HWNAT)
-	o.cidr(lanGateway, u.LANGateway)
-	o.cidr(guestGateway, u.GuestGateway)
-	o.cidr(iotGateway, u.IoTGateway)
+	o.prefix(lanGateway, u.LANGateway)
+	o.prefix(guestGateway, u.GuestGateway)
+	o.prefix(iotGateway, u.IoTGateway)
 	return o.m, o.err
 }
 
 // Interface is one logical network interface (GetNetworkInterfaces).
 type Interface struct {
-	Name           string   `json:"name"`
-	Device         string   `json:"device"`
-	Enabled        bool     `json:"enabled"`
-	Protocol       string   `json:"protocol"`
-	Address        string   `json:"address,omitempty"`
-	Gateway        string   `json:"gateway,omitempty"`
-	DNS            string   `json:"dns,omitempty"`
-	Username       string   `json:"username,omitempty"`
-	Password       string   `json:"password,omitempty"`
-	Up             bool     `json:"up"`
-	RuntimeAddress string   `json:"runtime_address,omitempty"`
-	RuntimeGateway string   `json:"runtime_gateway,omitempty"`
-	RuntimeDNS     []string `json:"runtime_dns"`
+	Name           string       `json:"name"`
+	Device         string       `json:"device"`
+	Enabled        bool         `json:"enabled"`
+	Protocol       string       `json:"protocol"`
+	Address        netip.Prefix `json:"address,omitzero"`
+	Gateway        netip.Addr   `json:"gateway,omitzero"`
+	DNS            netip.Addr   `json:"dns,omitzero"`
+	Username       string       `json:"username,omitempty"`
+	Password       string       `json:"password,omitempty"`
+	Up             bool         `json:"up"`
+	RuntimeAddress netip.Prefix `json:"runtime_address,omitzero"`
+	RuntimeGateway netip.Addr   `json:"runtime_gateway,omitzero"`
+	RuntimeDNS     []netip.Addr `json:"runtime_dns"`
 }
 
 // Redacted returns a copy of i with the PPPoE password masked.
@@ -280,28 +278,28 @@ func parseInterfaces(m map[string]any) []Interface {
 			Device:         rpc.String(f, ifDevice),
 			Enabled:        rpc.Bool(f, ifEnabled),
 			Protocol:       protocolName(f, ifProtocol),
-			Address:        formatAddr(f[ifAddress]),
-			Gateway:        formatAddr(f[ifGateway]),
-			DNS:            formatAddr(f[ifDNS]),
+			Address:        rpc.Prefix(f[ifAddress]),
+			Gateway:        rpc.Addr(f[ifGateway]),
+			DNS:            rpc.Addr(f[ifDNS]),
 			Username:       rpc.String(f, ifUsername),
 			Password:       rpc.String(f, ifPassword),
 			Up:             rpc.Bool(f, ifUp),
-			RuntimeAddress: formatAddr(f[ifRuntimeAddress]),
-			RuntimeGateway: formatAddr(f[ifRuntimeGateway]),
-			RuntimeDNS:     formatAddrs(f[ifRuntimeDNS]),
+			RuntimeAddress: rpc.Prefix(f[ifRuntimeAddress]),
+			RuntimeGateway: rpc.Addr(f[ifRuntimeGateway]),
+			RuntimeDNS:     rpc.Addrs(f[ifRuntimeDNS]),
 		})
 	}
 	return out
 }
 
 // InterfaceUpdate lists the interface settings to change; nil fields are
-// left as they are. Address is IPv4 CIDR.
+// left as they are. Addresses must be IPv4.
 type InterfaceUpdate struct {
 	Enabled  *bool
 	Protocol *string
-	Address  *string
-	Gateway  *string
-	DNS      *string
+	Address  *netip.Prefix
+	Gateway  *netip.Addr
+	DNS      *netip.Addr
 	Username *string
 	Password *string
 }
@@ -310,9 +308,9 @@ func (u InterfaceUpdate) options() (map[string]any, error) {
 	o := optionSet{m: map[string]any{}}
 	rpc.Put(o.m, ifEnabled, u.Enabled)
 	o.protocol(ifProtocol, u.Protocol)
-	o.cidr(ifAddress, u.Address)
-	o.ip(ifGateway, u.Gateway)
-	o.ip(ifDNS, u.DNS)
+	o.prefix(ifAddress, u.Address)
+	o.addr(ifGateway, u.Gateway)
+	o.addr(ifDNS, u.DNS)
 	rpc.Put(o.m, ifUsername, u.Username)
 	rpc.Put(o.m, ifPassword, u.Password)
 	return o.m, o.err
@@ -335,38 +333,38 @@ func updateInterface(ctx context.Context, c rpc.Caller, ifname string, u Interfa
 	return nil
 }
 
-// UPnPConfig is the UPnP and NAT-PMP port mapping service configuration.
-type UPnPConfig struct {
-	UPnP   bool `json:"upnp_enabled"`
-	NATPMP bool `json:"nat_pmp_enabled"`
-	Port   int  `json:"port"`
+// UPnP is the UPnP and NAT-PMP port mapping service configuration.
+type UPnP struct {
+	Enabled bool `json:"enabled"`
+	NATPMP  bool `json:"nat_pmp_enabled"`
+	Port    int  `json:"port"`
 }
 
-// UPnP fetches the UPnP/NAT-PMP configuration.
-func UPnP(ctx context.Context, c *amplifi.Client) (*UPnPConfig, error) {
+// GetUPnP fetches the UPnP/NAT-PMP configuration.
+func GetUPnP(ctx context.Context, c *amplifi.Client) (*UPnP, error) {
 	m, err := rpc.Map(ctx, c, amplifi.IfaceDevice, "GetUpnpConfig", nil)
 	if err != nil {
 		return nil, fmt.Errorf("UPnP config: %w", err)
 	}
-	return &UPnPConfig{
-		UPnP:   rpc.Bool(m, upnpEnabled),
-		NATPMP: rpc.Bool(m, natPMPEnabled),
-		Port:   int(rpc.Int(m, upnpPort)),
+	return &UPnP{
+		Enabled: rpc.Bool(m, upnpEnabled),
+		NATPMP:  rpc.Bool(m, natPMPEnabled),
+		Port:    int(rpc.Int(m, upnpPort)),
 	}, nil
 }
 
 // UPnPUpdate lists the UPnP settings to change; nil fields are left as they
 // are.
 type UPnPUpdate struct {
-	UPnP   *bool
-	NATPMP *bool
-	Port   *int
+	Enabled *bool
+	NATPMP  *bool
+	Port    *int
 }
 
 // UpdateUPnP applies u with a read-modify-write.
 func UpdateUPnP(ctx context.Context, c *amplifi.Client, u UPnPUpdate) error {
 	changes := map[string]any{}
-	rpc.Put(changes, upnpEnabled, u.UPnP)
+	rpc.Put(changes, upnpEnabled, u.Enabled)
 	rpc.Put(changes, natPMPEnabled, u.NATPMP)
 	rpc.PutInt(changes, upnpPort, u.Port)
 	if len(changes) == 0 {
@@ -379,28 +377,29 @@ func UpdateUPnP(ctx context.Context, c *amplifi.Client, u UPnPUpdate) error {
 	return nil
 }
 
-// QoS fetches the QoS configuration as decoded JSON; its schema is unknown.
-func QoS(ctx context.Context, c *amplifi.Client) (any, error) {
-	var v any
-	if err := rpc.Value(ctx, c, amplifi.IfaceDevice, "GetQosConfig", nil, &v); err != nil {
+// GetQoS fetches the QoS configuration as decoded JSON; its schema is
+// unknown.
+func GetQoS(ctx context.Context, c *amplifi.Client) (map[string]any, error) {
+	var m map[string]any
+	if err := rpc.Value(ctx, c, amplifi.IfaceDevice, "GetQosConfig", nil, &m); err != nil {
 		return nil, fmt.Errorf("QoS config: %w", err)
 	}
-	if v == nil {
-		v = map[string]any{}
+	if m == nil {
+		m = map[string]any{}
 	}
-	return v, nil
+	return m, nil
 }
 
 // SetQoS replaces the QoS configuration. cfg is sent as JSON and should have
-// the shape QoS returns.
-func SetQoS(ctx context.Context, c *amplifi.Client, cfg any) error {
+// the shape GetQoS returns.
+func SetQoS(ctx context.Context, c *amplifi.Client, cfg map[string]any) error {
 	if err := rpc.JSON(ctx, c, amplifi.IfaceDevice, "SetQosConfig", cfg, nil); err != nil {
 		return fmt.Errorf("QoS config: %w", err)
 	}
 	return nil
 }
 
-// optionSet collects option values that need parsing, keeping the first
+// optionSet collects option values that need packing, keeping the first
 // error. Plain values go straight into m with rpc.Put.
 type optionSet struct {
 	m   map[string]any
@@ -425,21 +424,21 @@ func (o *optionSet) protocol(key string, s *string) {
 	o.set(key, code, err)
 }
 
-func (o *optionSet) ip(key string, s *string) {
-	if s == nil {
+func (o *optionSet) addr(key string, a *netip.Addr) {
+	if a == nil {
 		return
 	}
-	b, err := packIP(*s)
+	b, err := rpc.PackAddr(*a)
 	o.set(key, b, err)
 }
 
-func (o *optionSet) ips(key string, list []string) {
+func (o *optionSet) addrs(key string, list []netip.Addr) {
 	if list == nil {
 		return
 	}
 	out := make([]any, 0, len(list))
-	for _, s := range list {
-		b, err := packIP(s)
+	for _, a := range list {
+		b, err := rpc.PackAddr(a)
 		if err != nil {
 			o.set(key, nil, err)
 			return
@@ -449,11 +448,11 @@ func (o *optionSet) ips(key string, list []string) {
 	o.set(key, out, nil)
 }
 
-func (o *optionSet) cidr(key string, s *string) {
-	if s == nil {
+func (o *optionSet) prefix(key string, p *netip.Prefix) {
+	if p == nil {
 		return
 	}
-	b, err := packCIDR(*s)
+	b, err := rpc.PackPrefix(*p)
 	o.set(key, b, err)
 }
 
@@ -461,88 +460,6 @@ func (o *optionSet) mac(key string, m *amplifi.MAC) {
 	if m == nil {
 		return
 	}
-	b, err := packMAC(*m)
+	b, err := rpc.PackMAC(*m)
 	o.set(key, b, err)
-}
-
-// packIP packs an IPv4 address as 4 byte binary
-//. "" packs as empty binary.
-func packIP(s string) ([]byte, error) {
-	if s == "" {
-		return []byte{}, nil
-	}
-	a, err := netip.ParseAddr(s)
-	if err != nil || !a.Is4() {
-		return nil, fmt.Errorf("invalid IPv4 address %q", s)
-	}
-	b := a.As4()
-	return b[:], nil
-}
-
-// packCIDR packs an IPv4 address with prefix length ("192.0.2.1/24") as 5
-// byte binary: the address followed by the prefix length
-//. "" packs as empty
-// binary.
-func packCIDR(s string) ([]byte, error) {
-	if s == "" {
-		return []byte{}, nil
-	}
-	p, err := netip.ParsePrefix(s)
-	if err != nil || !p.Addr().Is4() {
-		return nil, fmt.Errorf("invalid IPv4 address/prefix %q", s)
-	}
-	b := p.Addr().As4()
-	return append(b[:], byte(p.Bits())), nil
-}
-
-// packMAC packs a MAC address as 6 byte binary. An empty MAC packs as empty
-// binary, which clears a MAC override.
-func packMAC(m amplifi.MAC) ([]byte, error) {
-	if len(m) == 0 {
-		return []byte{}, nil
-	}
-	if len(m) != 6 {
-		return nil, fmt.Errorf("invalid MAC address %q", m.String())
-	}
-	return []byte(m), nil
-}
-
-// formatAddr formats a packed address: 4 or 16 bytes is a plain IPv4 or IPv6
-// address, 5 or 17 bytes the same followed by a prefix length. Anything else
-// non-empty is shown as hex.
-func formatAddr(v any) string {
-	b, ok := v.([]byte)
-	if !ok || len(b) == 0 {
-		return ""
-	}
-
-	switch len(b) {
-	case 4, 16:
-		a, _ := netip.AddrFromSlice(b)
-		return a.Unmap().String()
-	case 5, 17:
-		a, _ := netip.AddrFromSlice(b[:len(b)-1])
-		return a.Unmap().String() + "/" + strconv.Itoa(int(b[len(b)-1]))
-	default:
-		return hex.EncodeToString(b)
-	}
-}
-
-// formatAddrs formats a list of packed addresses. A single binary value is
-// accepted too.
-func formatAddrs(v any) []string {
-	out := []string{}
-	switch t := v.(type) {
-	case []byte:
-		if s := formatAddr(t); s != "" {
-			out = append(out, s)
-		}
-	case []any:
-		for _, item := range t {
-			if s := formatAddr(item); s != "" {
-				out = append(out, s)
-			}
-		}
-	}
-	return out
 }

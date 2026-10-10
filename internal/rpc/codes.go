@@ -26,13 +26,21 @@ var (
 		"5": "device", "6": "relay", "7": "friend", "8": "iot",
 	}
 
-	// RoleNames maps NodeRole codes.
-	RoleNames = map[string]string{"1": "router", "2": "extender"}
-
 	// ClientNetworks are the networks that carry clients; the others are
 	// mesh backhaul and setup networks.
 	ClientNetworks = map[string]bool{"3": true, "4": true, "5": true, "7": true, "8": true}
 )
+
+// roles maps NodeRole codes.
+var roles = map[int64]amplifi.Role{1: amplifi.RoleRouter, 2: amplifi.RoleMeshPoint}
+
+// Role converts a NodeRole code. Unknown codes give "#N".
+func Role(code int64) amplifi.Role {
+	if r, ok := roles[code]; ok {
+		return r
+	}
+	return amplifi.Role("#" + strconv.FormatInt(code, 10))
+}
 
 // Redacted replaces secrets in redacted output.
 const Redacted = "********"

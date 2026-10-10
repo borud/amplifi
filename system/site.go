@@ -41,7 +41,7 @@ const (
 )
 
 // siteSecretNames names the site options holding remote access (Teleport)
-// credentials, as they appear in SiteConfig.Secrets.
+// credentials, as they appear in Site.Secrets.
 var siteSecretNames = map[string]string{
 	siteMlAdoptEmail:   "ml_adopt_email",
 	siteMlAdoptPhone:   "ml_adopt_phone",
@@ -52,37 +52,38 @@ var siteSecretNames = map[string]string{
 	siteWebRTCLicense:  "webrtc_license",
 }
 
-// SiteConfig is the mesh-wide site configuration. Fields holds every option
-// code returned, so unmapped ones are still visible. Secrets holds the
-// remote access (Teleport) credentials; see Redacted. Channels use -1 for
-// automatic selection.
-type SiteConfig struct {
-	SiteID                int64             `json:"site_id"`
+// Site is the mesh-wide site configuration. Fields holds every option code
+// returned, so unmapped ones are still visible. Secrets holds the remote
+// access (Teleport) credentials; see Redacted. Channels use -1 for automatic
+// selection. The duration limits are the router's raw values; their unit is
+// unconfirmed.
+type Site struct {
+	SiteID                int               `json:"site_id"`
 	Country               string            `json:"country"`
 	Timezone              string            `json:"timezone"`
 	ZoneName              string            `json:"zone_name"`
-	ClockType             int64             `json:"clock_type"`
+	ClockType             int               `json:"clock_type"`
 	BandSteering          bool              `json:"band_steering"`
 	RouterSteering        bool              `json:"router_steering"`
 	MultipleHops          bool              `json:"multiple_hops"`
-	Channel24             int64             `json:"channel_2_4ghz"`
-	Channel5              int64             `json:"channel_5ghz"`
+	Channel24             int               `json:"channel_2_4ghz"`
+	Channel5              int               `json:"channel_5ghz"`
 	FirmwareUpdateChannel string            `json:"firmware_update_channel"`
 	WPSFromLCD            bool              `json:"wps_from_lcd"`
 	AcceptQoSOverhead     bool              `json:"accept_qos_overhead"`
 	AcceptDFS             bool              `json:"accept_dfs_radar_interruptions"`
-	GuestClientLimit      int64             `json:"guest_client_limit"`
+	GuestClientLimit      int               `json:"guest_client_limit"`
 	GuestDisableTime      string            `json:"guest_disable_time"`
-	GuestDurationLimit    int64             `json:"guest_duration_limit"`
-	FriendClientLimit     int64             `json:"friend_client_limit"`
+	GuestDurationLimit    int               `json:"guest_duration_limit"`
+	FriendClientLimit     int               `json:"friend_client_limit"`
 	FriendDisableTime     string            `json:"friend_disable_time"`
-	FriendDurationLimit   int64             `json:"friend_duration_limit"`
+	FriendDurationLimit   int               `json:"friend_duration_limit"`
 	Secrets               map[string]string `json:"secrets"`
 	Fields                map[string]any    `json:"fields"`
 }
 
 // Redacted returns a copy of s without the remote access credentials.
-func (s SiteConfig) Redacted() SiteConfig {
+func (s Site) Redacted() Site {
 	s.Secrets = map[string]string{}
 	s.Fields = maps.Clone(s.Fields)
 	for code := range siteSecretNames {
@@ -91,8 +92,8 @@ func (s SiteConfig) Redacted() SiteConfig {
 	return s
 }
 
-// Site reads the site configuration.
-func Site(ctx context.Context, c *amplifi.Client) (*SiteConfig, error) {
+// GetSite reads the site configuration.
+func GetSite(ctx context.Context, c *amplifi.Client) (*Site, error) {
 	m, err := rpc.ClusterMap(ctx, c, "GetSiteConfig")
 	if err != nil {
 		return nil, fmt.Errorf("site config: %w", err)
@@ -100,28 +101,28 @@ func Site(ctx context.Context, c *amplifi.Client) (*SiteConfig, error) {
 	return decodeSite(m), nil
 }
 
-func decodeSite(m map[string]any) *SiteConfig {
-	s := &SiteConfig{
-		SiteID:                rpc.Int(m, siteID),
+func decodeSite(m map[string]any) *Site {
+	s := &Site{
+		SiteID:                int(rpc.Int(m, siteID)),
 		Country:               rpc.String(m, siteCountry),
 		Timezone:              rpc.String(m, siteTimezone),
 		ZoneName:              rpc.String(m, siteZoneName),
-		ClockType:             rpc.Int(m, siteClockType),
+		ClockType:             int(rpc.Int(m, siteClockType)),
 		BandSteering:          rpc.Bool(m, siteBandSteering),
 		RouterSteering:        rpc.Bool(m, siteRouterSteering),
 		MultipleHops:          rpc.Bool(m, siteMultipleHops),
-		Channel24:             rpc.Int(m, siteChannel24),
-		Channel5:              rpc.Int(m, siteChannel5),
+		Channel24:             int(rpc.Int(m, siteChannel24)),
+		Channel5:              int(rpc.Int(m, siteChannel5)),
 		FirmwareUpdateChannel: rpc.String(m, siteFirmwareUpdateChannel),
 		WPSFromLCD:            rpc.Bool(m, siteWPSFromLCD),
 		AcceptQoSOverhead:     rpc.Bool(m, siteAcceptQoSOverhead),
 		AcceptDFS:             rpc.Bool(m, siteAcceptDFS),
-		GuestClientLimit:      rpc.Int(m, siteGuestClientLimit),
+		GuestClientLimit:      int(rpc.Int(m, siteGuestClientLimit)),
 		GuestDisableTime:      rpc.String(m, siteGuestDisableTime),
-		GuestDurationLimit:    rpc.Int(m, siteGuestDurationLimit),
-		FriendClientLimit:     rpc.Int(m, siteFriendClientLimit),
+		GuestDurationLimit:    int(rpc.Int(m, siteGuestDurationLimit)),
+		FriendClientLimit:     int(rpc.Int(m, siteFriendClientLimit)),
 		FriendDisableTime:     rpc.String(m, siteFriendDisableTime),
-		FriendDurationLimit:   rpc.Int(m, siteFriendDurationLimit),
+		FriendDurationLimit:   int(rpc.Int(m, siteFriendDurationLimit)),
 		Secrets:               map[string]string{},
 		Fields:                m,
 	}
@@ -134,7 +135,8 @@ func decodeSite(m map[string]any) *SiteConfig {
 }
 
 // SiteUpdate is a change to the site configuration. Nil fields are left as
-// they are. These are the writable options.
+// they are. These are the writable options; the guest network limits
+// are changed with wifi.UpdateGuest.
 type SiteUpdate struct {
 	// ZoneName is an IANA zone such as "America/Chicago".
 	ZoneName            *string
@@ -142,8 +144,6 @@ type SiteUpdate struct {
 	WPSFromLCD          *bool
 	AcceptQoSOverhead   *bool
 	AcceptDFS           *bool
-	GuestClientLimit    *int
-	GuestDurationLimit  *int
 	FriendClientLimit   *int
 	FriendDurationLimit *int
 }
@@ -153,8 +153,6 @@ func (u SiteUpdate) changes() map[string]any {
 	out := map[string]any{}
 	rpc.Put(out, siteZoneName, u.ZoneName)
 	rpc.Put(out, siteClockType, u.ClockType)
-	rpc.Put(out, siteGuestClientLimit, u.GuestClientLimit)
-	rpc.Put(out, siteGuestDurationLimit, u.GuestDurationLimit)
 	rpc.Put(out, siteFriendClientLimit, u.FriendClientLimit)
 	rpc.Put(out, siteFriendDurationLimit, u.FriendDurationLimit)
 	rpc.Put(out, siteWPSFromLCD, u.WPSFromLCD)

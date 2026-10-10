@@ -16,9 +16,9 @@ type HomeKit struct {
 	CanRunNow   bool `json:"service_can_run_now"`
 }
 
-// HomeKitStatus reports the state of the HomeKit service. Current firmware
+// GetHomeKit reports the state of the HomeKit service. Current firmware
 // refuses this method with a router error.
-func HomeKitStatus(ctx context.Context, c *amplifi.Client) (*HomeKit, error) {
+func GetHomeKit(ctx context.Context, c *amplifi.Client) (*HomeKit, error) {
 	var h HomeKit
 	if err := rpc.JSON(ctx, c, amplifi.IfaceDevice, "HomeKit", map[string]any{"action": "get_status"}, &h); err != nil {
 		return nil, fmt.Errorf("homekit status: %w", err)

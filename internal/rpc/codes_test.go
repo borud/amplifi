@@ -3,6 +3,8 @@ package rpc
 import (
 	"maps"
 	"testing"
+
+	"github.com/borud/amplifi"
 )
 
 func TestCodeName(t *testing.T) {
@@ -27,13 +29,29 @@ func TestName(t *testing.T) {
 		key  string
 		want string
 	}{
-		{"15", "extender"},
+		{"15", "5GHz"},
 		{"16", "#7"},
 		{"17", ""},
 	}
 	for _, tt := range tests {
-		if got := Name(RoleNames, m, tt.key); got != tt.want {
+		if got := Name(BandNames, m, tt.key); got != tt.want {
 			t.Errorf("Name(%q) = %q, want %q", tt.key, got, tt.want)
+		}
+	}
+}
+
+func TestRole(t *testing.T) {
+	tests := []struct {
+		code int64
+		want amplifi.Role
+	}{
+		{1, amplifi.RoleRouter},
+		{2, amplifi.RoleMeshPoint},
+		{3, "#3"},
+	}
+	for _, tt := range tests {
+		if got := Role(tt.code); got != tt.want {
+			t.Errorf("Role(%d) = %q, want %q", tt.code, got, tt.want)
 		}
 	}
 }

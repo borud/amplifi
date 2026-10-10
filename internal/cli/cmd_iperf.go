@@ -17,17 +17,10 @@ type systemIperfCmd struct {
 // Run starts an iperf server on the unit for 30 seconds.
 func (c *systemIperfCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		res, err := system.RunIperf(ctx, cl, c.Port)
-		if err != nil {
+		if err := system.StartIperf(ctx, cl, c.Port); err != nil {
 			return err
 		}
-		if opt.JSON() {
-			return printJSON(res)
-		}
 
-		if res != nil {
-			fmt.Printf("router answered: %s\n", inlineValue(res))
-		}
 		client := "iperf -c " + c.Host
 		if c.Port > 0 {
 			client += " -p " + strconv.Itoa(c.Port)

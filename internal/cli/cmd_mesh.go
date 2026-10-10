@@ -12,12 +12,19 @@ import (
 )
 
 type meshCmd struct {
-	List         meshListCmd         `kong:"cmd,help='list the mesh points connected to the router'"`
-	Nodes        meshNodesCmd        `kong:"cmd,help='list every unit registered in the mesh'"`
+	List         meshListCmd         `kong:"cmd,aliases='ls',help='list the mesh points connected to the router'"`
+	Units        meshUnitsCmd        `kong:"cmd,help='list every unit registered in the mesh'"`
 	Signal       meshSignalCmd       `kong:"cmd,help='show the signal quality of wireless mesh links'"`
 	Ports        meshPortsCmd        `kong:"cmd,help='show the Ethernet ports of every unit'"`
+	Pairings     meshPairingsCmd     `kong:"cmd,help='factory pairing of new mesh points'"`
 	Ignore       meshIgnoreCmd       `kong:"cmd,help='stop offering units for adoption into the mesh'"`
 	FactoryReset meshFactoryResetCmd `kong:"cmd,help='factory reset a mesh point (irreversible)'"`
+}
+
+type meshPairingsCmd struct {
+	List   meshPairingsListCmd   `kong:"cmd,aliases='ls',help='list units waiting to pair, and their state'"`
+	Accept meshPairingsAcceptCmd `kong:"cmd,help='accept a pairing request'"`
+	Reject meshPairingsRejectCmd `kong:"cmd,help='reject a pairing request'"`
 }
 
 type meshListCmd struct {
@@ -39,7 +46,7 @@ func (c *meshListCmd) Run(opt *Options) error {
 		fmt.Fprintln(tw, "NAME\tROLE\tIP\tMAC\tUPTIME\tBACKHAUL\tMASTER")
 		for _, p := range peers {
 			backhaul, master := "", ""
-			if p.Role != "router" {
+			if p.Role != amplifi.RoleRouter {
 				backhaul = fmt.Sprintf("%s %d dBm", p.Band, p.RSSI)
 				master = p.Master.String()
 			}
@@ -49,25 +56,25 @@ func (c *meshListCmd) Run(opt *Options) error {
 	})
 }
 
-type meshNodesCmd struct {
+type meshUnitsCmd struct {
 	unitFlags `kong:"embed"`
 }
 
 // Run lists the registered mesh units.
-func (c *meshNodesCmd) Run(opt *Options) error {
+func (c *meshUnitsCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		nodes, err := mesh.Nodes(ctx, cl)
+		units, err := mesh.Units(ctx, cl)
 		if err != nil {
 			return err
 		}
 		if opt.JSON() {
-			return printJSON(nodes)
+			return printJSON(units)
 		}
 
 		tw := newTable(os.Stdout)
 		fmt.Fprintln(tw, "NAME\tROLE\tMAC\tPLATFORM")
-		for _, n := range nodes {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", n.Name, n.Role, n.MAC, n.Platform)
+		for _, u := range units {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", u.Name, u.Role, u.MAC, u.Platform)
 		}
 		return tw.Flush()
 	})
@@ -116,13 +123,13 @@ func (c *meshPortsCmd) Run(opt *Options) error {
 		}
 
 		tw := newTable(os.Stdout)
-		fmt.Fprintln(tw, "NODE\tPORT\tLINK\tSPEED\tRX\tTX")
+		fmt.Fprintln(tw, "UNIT\tPORT\tLINK\tSPEED\tRX\tTX")
 		for _, p := range ports {
 			link, speed := "down", ""
 			if p.Link {
-				link, speed = "up", fmt.Sprintf("%d Mbit/s", p.LinkSpeed)
+				link, speed = "up", fmt.Sprintf("%d Mbit/s", p.LinkSpeedMbps)
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", p.Node, p.Port, link, speed, mbit(int64(p.RxBitrate)), mbit(int64(p.TxBitrate)))
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", p.Unit, p.Port, link, speed, mbit(p.RxKbps), mbit(p.TxKbps))
 		}
 		return tw.Flush()
 	})
@@ -148,7 +155,7 @@ func (c *meshIgnoreCmd) Run(opt *Options) error {
 
 type meshFactoryResetCmd struct {
 	unitFlags `kong:"embed"`
-	yesFlag   `kong:"embed"`
+	resetFlag `kong:"embed"`
 	MAC       string `kong:"arg,name='mac',help='MAC address of the mesh point to reset'"`
 }
 
@@ -166,7 +173,7 @@ func (c *meshFactoryResetCmd) Run(opt *Options) error {
 	return c.commit(opt, func(ctx context.Context, cl *amplifi.Client) error {
 		// The list's format is not documented, so an unreadable or empty
 		// list does not block the reset.
-		resettable, err := mesh.FactoryResetNodes(ctx, cl)
+		resettable, err := mesh.ResettableUnits(ctx, cl)
 		if err != nil {
 			opt.Logger().Warn("could not read the list of resettable units", "err", err)
 		}
@@ -174,5 +181,63 @@ func (c *meshFactoryResetCmd) Run(opt *Options) error {
 			return fmt.Errorf("%s is not in the router's factory reset list (%s)", mac, joinMACs(resettable))
 		}
 		return mesh.FactoryReset(ctx, cl, mac)
+	})
+}
+
+type meshPairingsListCmd struct {
+	unitFlags `kong:"embed"`
+}
+
+// Run prints the factory pairing state.
+func (c *meshPairingsListCmd) Run(opt *Options) error {
+	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
+		pairings, err := mesh.Pairings(ctx, cl)
+		if err != nil {
+			return err
+		}
+		if opt.JSON() {
+			return printJSON(pairings)
+		}
+
+		w := newTable(os.Stdout)
+		fmt.Fprintln(w, "PEER\tNAME\tSTATE")
+		for _, p := range pairings {
+			fmt.Fprintf(w, "%s\t%s\t%s\n", p.PeerID, p.Name, p.State)
+		}
+		return w.Flush()
+	})
+}
+
+type meshPairingsAcceptCmd struct {
+	unitFlags `kong:"embed"`
+	yesFlag   `kong:"embed"`
+	Peer      string `kong:"arg,help='peer ID, as listed by mesh pairings list'"`
+}
+
+// Run accepts a pairing request.
+func (c *meshPairingsAcceptCmd) Run(opt *Options) error {
+	return meshPair(opt, &c.unitFlags, c.yesFlag, c.Peer, true)
+}
+
+type meshPairingsRejectCmd struct {
+	unitFlags `kong:"embed"`
+	yesFlag   `kong:"embed"`
+	Peer      string `kong:"arg,help='peer ID, as listed by mesh pairings list'"`
+}
+
+// Run rejects a pairing request.
+func (c *meshPairingsRejectCmd) Run(opt *Options) error {
+	return meshPair(opt, &c.unitFlags, c.yesFlag, c.Peer, false)
+}
+
+func meshPair(opt *Options, u *unitFlags, y yesFlag, peer string, accept bool) error {
+	verb, pair := "reject", mesh.RejectPairing
+	if accept {
+		verb, pair = "accept", mesh.AcceptPairing
+	}
+
+	prompt := fmt.Sprintf("%s pairing with %q on %s?", verb, peer, u.Host)
+	return u.run(opt, y, prompt, func(ctx context.Context, cl *amplifi.Client) error {
+		return pair(ctx, cl, peer)
 	})
 }

@@ -55,7 +55,7 @@ func (c *loginCmd) Run(opt *Options) error {
 
 	ctx, cancel := u.context()
 	defer cancel()
-	info, err := device.Board(ctx, cl)
+	info, err := device.GetBoard(ctx, cl)
 	if err != nil {
 		return fmt.Errorf("encrypted channel check failed: %w", err)
 	}

@@ -3,13 +3,14 @@ package cli
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/borud/amplifi"
-	"github.com/borud/amplifi/network"
+	"github.com/borud/amplifi/dhcp"
 )
 
 type dhcpCmd struct {
@@ -18,14 +19,14 @@ type dhcpCmd struct {
 }
 
 type dhcpPoolsCmd struct {
-	List dhcpPoolsListCmd `kong:"cmd,help='list the DHCP pools'"`
+	List dhcpPoolsListCmd `kong:"cmd,aliases='ls',help='list the DHCP pools'"`
 	Add  dhcpPoolsAddCmd  `kong:"cmd,help='add a DHCP pool'"`
 	Set  dhcpPoolsSetCmd  `kong:"cmd,help='change a DHCP pool'"`
 	Rm   dhcpPoolsRmCmd   `kong:"cmd,help='delete DHCP pools'"`
 }
 
 type dhcpLeasesCmd struct {
-	List dhcpLeasesListCmd `kong:"cmd,help='list the static leases'"`
+	List dhcpLeasesListCmd `kong:"cmd,aliases='ls',help='list the static leases'"`
 	Add  dhcpLeasesAddCmd  `kong:"cmd,help='reserve an address for a MAC address'"`
 	Set  dhcpLeasesSetCmd  `kong:"cmd,help='change a static lease'"`
 	Rm   dhcpLeasesRmCmd   `kong:"cmd,help='delete static leases'"`
@@ -38,7 +39,7 @@ type dhcpPoolsListCmd struct {
 // Run lists the DHCP pools.
 func (c *dhcpPoolsListCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		pools, err := network.DHCPPools(ctx, cl)
+		pools, err := dhcp.Pools(ctx, cl)
 		if err != nil {
 			return err
 		}
@@ -79,12 +80,12 @@ type dhcpPoolFlags struct {
 }
 
 // plan maps the flags to a pool update and records them against cur.
-func (f *dhcpPoolFlags) plan(cs *changeSet, cur network.DHCPPool) network.DHCPPoolUpdate {
-	u := network.DHCPPoolUpdate{
+func (f *dhcpPoolFlags) plan(cs *changeSet, cur dhcp.Pool) dhcp.PoolUpdate {
+	u := dhcp.PoolUpdate{
 		Interface: cs.text("interface", f.Iface, cur.Interface),
 		Ignore:    cs.onOff("ignore", f.Ignore, cur.Ignore),
-		Offset:    cs.number("offset", f.Offset, int64(cur.Offset)),
-		Length:    cs.number("length", f.Length, int64(cur.Length)),
+		Offset:    cs.number("offset", f.Offset, cur.Offset),
+		Length:    cs.number("length", f.Length, cur.Length),
 		DHCP4Mode: cs.text("dhcp4", f.DHCP4, cur.DHCP4Mode),
 		DHCP6Mode: cs.text("dhcp6", f.DHCP6, cur.DHCP6Mode),
 		RAMode:    cs.text("ra", f.RA, cur.RAMode),
@@ -109,14 +110,25 @@ type dhcpPoolsAddCmd struct {
 func (c *dhcpPoolsAddCmd) Run(opt *Options) error {
 	var cs changeSet
 	cs.create("pool", c.Name)
-	u := c.plan(&cs, network.DHCPPool{})
+	u := c.plan(&cs, dhcp.Pool{})
 	ok, err := cs.approve(c.yesFlag, fmt.Sprintf("add DHCP pool %s on %s?", c.Name, c.Host))
 	if err != nil || !ok {
 		return err
 	}
-	return c.commit(opt, func(ctx context.Context, cl *amplifi.Client) error {
-		return network.AddDHCPPool(ctx, cl, c.Name, u)
-	})
+
+	p := dhcp.Pool{
+		Name:      c.Name,
+		Interface: deref(u.Interface),
+		Ignore:    deref(u.Ignore),
+		Offset:    deref(u.Offset),
+		Length:    deref(u.Length),
+		LeaseTime: deref(u.LeaseTime),
+		DHCP4Mode: deref(u.DHCP4Mode),
+		DHCP6Mode: deref(u.DHCP6Mode),
+		RAMode:    deref(u.RAMode),
+		NDPMode:   deref(u.NDPMode),
+	}
+	return c.commit(opt, func(ctx context.Context, cl *amplifi.Client) error { return dhcp.AddPool(ctx, cl, p) })
 }
 
 type dhcpPoolsSetCmd struct {
@@ -128,18 +140,18 @@ type dhcpPoolsSetCmd struct {
 
 // Run changes a pool.
 func (c *dhcpPoolsSetCmd) Run(opt *Options) error {
-	read := func(ctx context.Context, cl *amplifi.Client) (network.DHCPPool, error) {
-		pools, err := network.DHCPPools(ctx, cl)
+	read := func(ctx context.Context, cl *amplifi.Client) (dhcp.Pool, error) {
+		pools, err := dhcp.Pools(ctx, cl)
 		if err != nil {
-			return network.DHCPPool{}, err
+			return dhcp.Pool{}, err
 		}
-		return findOne(pools, c.Name, "DHCP pool", func(p network.DHCPPool) string { return p.Name }, nil)
+		return findOne(pools, c.Name, "DHCP pool", func(p dhcp.Pool) string { return p.Name }, nil)
 	}
 	return apply(opt, &c.unitFlags, c.yesFlag, fmt.Sprintf("change DHCP pool %s on %s?", c.Name, c.Host), read,
-		func(cs *changeSet, cur network.DHCPPool) writeFunc {
+		func(cs *changeSet, cur dhcp.Pool) writeFunc {
 			u := c.plan(cs, cur)
 			return func(ctx context.Context, cl *amplifi.Client) error {
-				return network.UpdateDHCPPool(ctx, cl, cur.Name, u)
+				return dhcp.UpdatePool(ctx, cl, cur.Name, u)
 			}
 		})
 }
@@ -154,7 +166,7 @@ type dhcpPoolsRmCmd struct {
 func (c *dhcpPoolsRmCmd) Run(opt *Options) error {
 	prompt := fmt.Sprintf("delete DHCP pool %s on %s? Clients on that network will get no addresses", strings.Join(c.Names, ", "), c.Host)
 	return c.run(opt, c.yesFlag, prompt, func(ctx context.Context, cl *amplifi.Client) error {
-		return network.DeleteDHCPPools(ctx, cl, c.Names...)
+		return dhcp.DeletePools(ctx, cl, c.Names...)
 	})
 }
 
@@ -165,7 +177,7 @@ type dhcpLeasesListCmd struct {
 // Run lists the static leases.
 func (c *dhcpLeasesListCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		leases, err := network.DHCPStaticLeases(ctx, cl)
+		leases, err := dhcp.StaticLeases(ctx, cl)
 		if err != nil {
 			return err
 		}
@@ -197,11 +209,15 @@ func (c *dhcpLeasesAddCmd) Run(opt *Options) error {
 	if err != nil {
 		return err
 	}
-	l := network.DHCPStaticLease{MAC: mac, IP: c.IP, Name: c.Name, Description: c.Description}
+	ip, err := netip.ParseAddr(c.IP)
+	if err != nil {
+		return err
+	}
+	l := dhcp.StaticLease{MAC: mac, IP: ip, Name: c.Name, Description: c.Description}
 
 	var cs changeSet
 	cs.create("mac", l.MAC.String())
-	cs.create("ip", l.IP)
+	cs.create("ip", l.IP.String())
 	cs.create("name", l.Name)
 	cs.create("description", l.Description)
 	ok, err := cs.approve(c.yesFlag, fmt.Sprintf("add this static lease on %s?", c.Host))
@@ -209,7 +225,7 @@ func (c *dhcpLeasesAddCmd) Run(opt *Options) error {
 		return err
 	}
 	return c.commit(opt, func(ctx context.Context, cl *amplifi.Client) error {
-		return network.AddDHCPStaticLease(ctx, cl, l)
+		return dhcp.AddStaticLease(ctx, cl, l)
 	})
 }
 
@@ -224,34 +240,34 @@ type dhcpLeasesSetCmd struct {
 
 // Run changes a static lease.
 func (c *dhcpLeasesSetCmd) Run(opt *Options) error {
-	read := func(ctx context.Context, cl *amplifi.Client) (network.DHCPStaticLease, error) {
-		leases, err := network.DHCPStaticLeases(ctx, cl)
+	read := func(ctx context.Context, cl *amplifi.Client) (dhcp.StaticLease, error) {
+		leases, err := dhcp.StaticLeases(ctx, cl)
 		if err != nil {
-			return network.DHCPStaticLease{}, err
+			return dhcp.StaticLease{}, err
 		}
 		return dhcpFindLease(leases, c.Lease)
 	}
 	return apply(opt, &c.unitFlags, c.yesFlag, fmt.Sprintf("change the static lease %s on %s?", c.Lease, c.Host), read,
-		func(cs *changeSet, cur network.DHCPStaticLease) writeFunc {
-			u := network.DHCPStaticLeaseUpdate{
-				IP:          cs.text("ip", c.IP, cur.IP),
+		func(cs *changeSet, cur dhcp.StaticLease) writeFunc {
+			u := dhcp.StaticLeaseUpdate{
+				IP:          cs.addr("ip", c.IP, cur.IP),
 				Name:        cs.text("name", c.Name, cur.Name),
 				Description: cs.text("description", c.Description, cur.Description),
 			}
 			return func(ctx context.Context, cl *amplifi.Client) error {
-				return network.UpdateDHCPStaticLease(ctx, cl, cur.MAC, u)
+				return dhcp.UpdateStaticLease(ctx, cl, cur.MAC, u)
 			}
 		})
 }
 
 // dhcpFindLease finds a lease by MAC address, in any notation, or by name.
-func dhcpFindLease(leases []network.DHCPStaticLease, ref string) (network.DHCPStaticLease, error) {
+func dhcpFindLease(leases []dhcp.StaticLease, ref string) (dhcp.StaticLease, error) {
 	if mac, err := amplifi.ParseMAC(ref); err == nil {
 		ref = mac.String()
 	}
 	return findOne(leases, ref, "static lease",
-		func(l network.DHCPStaticLease) string { return l.MAC.String() },
-		func(l network.DHCPStaticLease) []string { return []string{l.Name} })
+		func(l dhcp.StaticLease) string { return l.MAC.String() },
+		func(l dhcp.StaticLease) []string { return []string{l.Name} })
 }
 
 type dhcpLeasesRmCmd struct {
@@ -269,6 +285,6 @@ func (c *dhcpLeasesRmCmd) Run(opt *Options) error {
 
 	prompt := fmt.Sprintf("delete the static leases for %s on %s?", joinMACs(macs), c.Host)
 	return c.run(opt, c.yesFlag, prompt, func(ctx context.Context, cl *amplifi.Client) error {
-		return network.DeleteDHCPStaticLeases(ctx, cl, macs...)
+		return dhcp.DeleteStaticLeases(ctx, cl, macs...)
 	})
 }

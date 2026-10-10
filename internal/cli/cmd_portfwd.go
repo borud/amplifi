@@ -4,17 +4,18 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"net/netip"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/borud/amplifi"
-	"github.com/borud/amplifi/network"
+	"github.com/borud/amplifi/portforward"
 )
 
 type portfwdCmd struct {
-	List    portfwdListCmd    `kong:"cmd,help='list port forwarding rules'"`
+	List    portfwdListCmd    `kong:"cmd,aliases='ls',help='list port forwarding rules'"`
 	Add     portfwdAddCmd     `kong:"cmd,help='add a port forwarding rule'"`
 	Set     portfwdSetCmd     `kong:"cmd,help='change a port forwarding rule'"`
 	Enable  portfwdEnableCmd  `kong:"cmd,help='enable a port forwarding rule'"`
@@ -29,7 +30,7 @@ type portfwdListCmd struct {
 // Run lists the rules.
 func (c *portfwdListCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		rules, err := network.PortForwards(ctx, cl)
+		rules, err := portforward.Rules(ctx, cl)
 		if err != nil {
 			return err
 		}
@@ -40,23 +41,23 @@ func (c *portfwdListCmd) Run(opt *Options) error {
 		tw := newTable(os.Stdout)
 		fmt.Fprintln(tw, "ID\tENABLED\tNAME\tTO\tPORTS")
 		for _, r := range rules {
-			fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n", r.ID, onOff(r.Enabled), r.Name, r.LANIP, portfwdPorts(r.Mappings))
+			fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n", r.ID, onOff(r.Enabled), r.Name, addrText(r.LANIP), portfwdPorts(r.Mappings))
 		}
 		return tw.Flush()
 	})
 }
 
 // portfwdPorts formats mappings as "tcp 8080->80, udp 5000-5009".
-func portfwdPorts(mappings []network.PortMapping) string {
+func portfwdPorts(mappings []portforward.Mapping) string {
 	parts := make([]string, 0, len(mappings))
 	for _, m := range mappings {
 		wan := portfwdRange(m.WANPort, m.WANCount)
 		lan := portfwdRange(cmp.Or(m.LANPort, m.WANPort), cmp.Or(m.LANCount, m.WANCount))
 		if lan == wan {
-			parts = append(parts, m.Protocol+" "+wan)
+			parts = append(parts, m.Protocol.String()+" "+wan)
 			continue
 		}
-		parts = append(parts, m.Protocol+" "+wan+"->"+lan)
+		parts = append(parts, m.Protocol.String()+" "+wan+"->"+lan)
 	}
 	return strings.Join(parts, ", ")
 }
@@ -89,7 +90,7 @@ func portfwdParseRange(s string) (port, count int, err error) {
 // portfwdMappings builds the mappings for proto (tcp, udp or both) from the
 // --ext and --int flag values. An empty internal range means the same as the
 // external one.
-func portfwdMappings(proto, ext, internal string) ([]network.PortMapping, error) {
+func portfwdMappings(proto, ext, internal string) ([]portforward.Mapping, error) {
 	wan, wanCount, err := portfwdParseRange(ext)
 	if err != nil {
 		return nil, err
@@ -108,27 +109,30 @@ func portfwdMappings(proto, ext, internal string) ([]network.PortMapping, error)
 		return nil, fmt.Errorf("internal range %q is not the same size as external range %q", internal, ext)
 	}
 
-	protos := []string{proto}
+	var protos []portforward.Protocol
 	switch proto {
-	case "tcp", "udp":
+	case "tcp":
+		protos = []portforward.Protocol{portforward.TCP}
+	case "udp":
+		protos = []portforward.Protocol{portforward.UDP}
 	case "both":
-		protos = []string{"tcp", "udp"}
+		protos = []portforward.Protocol{portforward.TCP, portforward.UDP}
 	default:
 		return nil, fmt.Errorf("--proto must be tcp, udp or both, not %q", proto)
 	}
 
-	out := make([]network.PortMapping, 0, len(protos))
+	out := make([]portforward.Mapping, 0, len(protos))
 	for i, p := range protos {
-		out = append(out, network.PortMapping{ID: i + 1, Protocol: p, WANPort: wan, LANPort: lan, WANCount: wanCount, LANCount: lanCount})
+		out = append(out, portforward.Mapping{ID: i + 1, Protocol: p, WANPort: wan, LANPort: lan, WANCount: wanCount, LANCount: lanCount})
 	}
 	return out, nil
 }
 
 // portfwdProto describes the protocols of existing mappings the way --proto
 // names them.
-func portfwdProto(mappings []network.PortMapping) string {
-	tcp := slices.ContainsFunc(mappings, func(m network.PortMapping) bool { return m.Protocol == "tcp" })
-	udp := slices.ContainsFunc(mappings, func(m network.PortMapping) bool { return m.Protocol == "udp" })
+func portfwdProto(mappings []portforward.Mapping) string {
+	tcp := slices.ContainsFunc(mappings, func(m portforward.Mapping) bool { return m.Protocol == portforward.TCP })
+	udp := slices.ContainsFunc(mappings, func(m portforward.Mapping) bool { return m.Protocol == portforward.UDP })
 	switch {
 	case tcp && udp:
 		return "both"
@@ -156,11 +160,15 @@ func (c *portfwdAddCmd) Run(opt *Options) error {
 	if err != nil {
 		return err
 	}
-	r := network.PortForward{Name: c.Name, Enabled: !c.Disabled, LANIP: c.To, Mappings: mappings}
+	to, err := netip.ParseAddr(c.To)
+	if err != nil {
+		return fmt.Errorf("--to: %w", err)
+	}
+	r := portforward.Rule{Name: c.Name, Enabled: !c.Disabled, LANIP: to, Mappings: mappings}
 
 	var cs changeSet
 	cs.create("name", r.Name)
-	cs.create("to", r.LANIP)
+	cs.create("to", r.LANIP.String())
 	cs.create("ports", portfwdPorts(r.Mappings))
 	cs.create("enabled", onOff(r.Enabled))
 	ok, err := cs.approve(c.yesFlag, fmt.Sprintf("add this port forwarding rule on %s?", c.Host))
@@ -170,7 +178,7 @@ func (c *portfwdAddCmd) Run(opt *Options) error {
 
 	var id int
 	err = c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) (err error) {
-		id, err = network.AddPortForward(ctx, cl, r)
+		id, err = portforward.AddRule(ctx, cl, r)
 		return err
 	})
 	if err != nil {
@@ -194,17 +202,17 @@ type portfwdSetCmd struct {
 // Run changes a rule.
 func (c *portfwdSetCmd) Run(opt *Options) error {
 	return apply(opt, &c.unitFlags, c.yesFlag, portfwdPrompt(c.ID, c.Host), portfwdReader(c.ID),
-		func(cs *changeSet, cur network.PortForward) writeFunc {
+		func(cs *changeSet, cur portforward.Rule) writeFunc {
 			return portfwdWrite(cur.ID, c.update(cs, cur))
 		})
 }
 
 // update maps the flags to a PortForwardUpdate and records them against
 // cur.
-func (c *portfwdSetCmd) update(cs *changeSet, cur network.PortForward) network.PortForwardUpdate {
-	u := network.PortForwardUpdate{
+func (c *portfwdSetCmd) update(cs *changeSet, cur portforward.Rule) portforward.RuleUpdate {
+	u := portforward.RuleUpdate{
 		Name:  cs.text("name", c.Name, cur.Name),
-		LANIP: cs.text("to", c.To, cur.LANIP),
+		LANIP: cs.addr("to", c.To, cur.LANIP),
 	}
 	if c.Proto == nil && c.Ext == nil && c.Int == nil {
 		return u
@@ -222,7 +230,7 @@ func (c *portfwdSetCmd) update(cs *changeSet, cur network.PortForward) network.P
 
 // mappings rebuilds the rule's mappings, taking the flags not given from
 // the first current mapping.
-func (c *portfwdSetCmd) mappings(cur network.PortForward) ([]network.PortMapping, error) {
+func (c *portfwdSetCmd) mappings(cur portforward.Rule) ([]portforward.Mapping, error) {
 	proto, ext, internal := portfwdProto(cur.Mappings), "", ""
 	if len(cur.Mappings) > 0 {
 		m := cur.Mappings[0]
@@ -266,8 +274,8 @@ func (c *portfwdDisableCmd) Run(opt *Options) error {
 func portfwdSetEnabled(opt *Options, u *unitFlags, y yesFlag, id int, enabled bool) error {
 	flag := onOffFlag(enabled)
 	return apply(opt, u, y, portfwdPrompt(id, u.Host), portfwdReader(id),
-		func(cs *changeSet, cur network.PortForward) writeFunc {
-			return portfwdWrite(cur.ID, network.PortForwardUpdate{Enabled: cs.onOff("enabled", &flag, cur.Enabled)})
+		func(cs *changeSet, cur portforward.Rule) writeFunc {
+			return portfwdWrite(cur.ID, portforward.RuleUpdate{Enabled: cs.onOff("enabled", &flag, cur.Enabled)})
 		})
 }
 
@@ -276,18 +284,18 @@ func portfwdPrompt(id int, host string) string {
 }
 
 // portfwdReader returns a reader that fetches rule id.
-func portfwdReader(id int) func(context.Context, *amplifi.Client) (network.PortForward, error) {
-	return func(ctx context.Context, cl *amplifi.Client) (network.PortForward, error) {
-		rules, err := network.PortForwards(ctx, cl)
+func portfwdReader(id int) func(context.Context, *amplifi.Client) (portforward.Rule, error) {
+	return func(ctx context.Context, cl *amplifi.Client) (portforward.Rule, error) {
+		rules, err := portforward.Rules(ctx, cl)
 		if err != nil {
-			return network.PortForward{}, err
+			return portforward.Rule{}, err
 		}
-		return findOne(rules, strconv.Itoa(id), "port forwarding rule", func(r network.PortForward) string { return strconv.Itoa(r.ID) }, nil)
+		return findOne(rules, strconv.Itoa(id), "port forwarding rule", func(r portforward.Rule) string { return strconv.Itoa(r.ID) }, nil)
 	}
 }
 
-func portfwdWrite(id int, u network.PortForwardUpdate) writeFunc {
-	return func(ctx context.Context, cl *amplifi.Client) error { return network.UpdatePortForward(ctx, cl, id, u) }
+func portfwdWrite(id int, u portforward.RuleUpdate) writeFunc {
+	return func(ctx context.Context, cl *amplifi.Client) error { return portforward.UpdateRule(ctx, cl, id, u) }
 }
 
 type portfwdRmCmd struct {
@@ -304,6 +312,6 @@ func (c *portfwdRmCmd) Run(opt *Options) error {
 	}
 	prompt := fmt.Sprintf("delete port forwarding rule %s on %s?", strings.Join(ids, ", "), c.Host)
 	return c.run(opt, c.yesFlag, prompt, func(ctx context.Context, cl *amplifi.Client) error {
-		return network.DeletePortForwards(ctx, cl, c.IDs...)
+		return portforward.DeleteRules(ctx, cl, c.IDs...)
 	})
 }

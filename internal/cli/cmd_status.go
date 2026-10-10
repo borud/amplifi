@@ -25,14 +25,14 @@ type statusCmd struct {
 // is nil and its error is recorded in Errors, so one unsupported method does
 // not hide the rest.
 type status struct {
-	Board    *device.BoardInfo       `json:"board,omitempty"`
-	Firmware *device.FirmwareInfo    `json:"firmware,omitempty"`
-	Updates  *firmware.Versions      `json:"updates,omitempty"`
-	Internet *device.InternetStatus  `json:"internet,omitempty"`
-	Perf     *device.PerformanceInfo `json:"performance,omitempty"`
-	Clients  *clients.WifiCount      `json:"clients,omitempty"`
-	Peers    []mesh.Peer             `json:"peers,omitempty"`
-	Errors   map[string]string       `json:"errors,omitempty"`
+	Board      *device.Board         `json:"board,omitempty"`
+	Firmware   *device.Firmware      `json:"firmware,omitempty"`
+	Updates    *firmware.Versions    `json:"updates,omitempty"`
+	Internet   *device.InternetCheck `json:"internet,omitempty"`
+	Throughput *device.Throughput    `json:"throughput,omitempty"`
+	Clients    *clients.Counts       `json:"clients,omitempty"`
+	Peers      []mesh.Peer           `json:"peers,omitempty"`
+	Errors     map[string]string     `json:"errors,omitempty"`
 }
 
 // Run prints a one-screen health summary of the unit and its mesh.
@@ -66,11 +66,11 @@ func statusGather(ctx context.Context, cl *amplifi.Client) (*status, error) {
 		name string
 		get  func() error
 	}{
-		{"board", func() (err error) { st.Board, err = device.Board(ctx, cl); return }},
-		{"firmware", func() (err error) { st.Firmware, err = device.Firmware(ctx, cl); return }},
-		{"updates", func() (err error) { st.Updates, err = firmware.Updates(ctx, cl); return }},
-		{"internet", func() (err error) { st.Internet, err = device.Internet(ctx, cl); return }},
-		{"performance", func() (err error) { st.Perf, err = device.Performance(ctx, cl); return }},
+		{"board", func() (err error) { st.Board, err = device.GetBoard(ctx, cl); return }},
+		{"firmware", func() (err error) { st.Firmware, err = device.GetFirmware(ctx, cl); return }},
+		{"updates", func() (err error) { st.Updates, err = firmware.GetVersions(ctx, cl); return }},
+		{"internet", func() (err error) { st.Internet, err = device.CheckInternet(ctx, cl); return }},
+		{"throughput", func() (err error) { st.Throughput, err = device.GetThroughput(ctx, cl); return }},
 		{"clients", func() (err error) { st.Clients, err = clients.Count(ctx, cl); return }},
 		{"peers", func() (err error) { st.Peers, err = mesh.Peers(ctx, cl); return }},
 	}
@@ -95,9 +95,9 @@ func statusPrint(w io.Writer, host string, st *status) error {
 	if st.Internet != nil {
 		fmt.Fprintf(tw, "internet\t%s\n", statusInternetLine(st.Internet))
 	}
-	if st.Perf != nil {
+	if t := st.Throughput; t != nil {
 		fmt.Fprintf(tw, "throughput\trx %s  tx %s  (peak rx %s  tx %s)\n",
-			mbit(st.Perf.Rx), mbit(st.Perf.Tx), mbit(st.Perf.RxMax), mbit(st.Perf.TxMax))
+			mbit(t.RxKbps), mbit(t.TxKbps), mbit(t.RxMaxKbps), mbit(t.TxMaxKbps))
 	}
 	if st.Clients != nil {
 		fmt.Fprintf(tw, "wifi clients\t%d on this unit  (%s; %s)\n", st.Clients.Total, counts(st.Clients.ByBand), counts(st.Clients.ByNetwork))
@@ -112,7 +112,7 @@ func statusPrint(w io.Writer, host string, st *status) error {
 	if len(st.Peers) == 0 {
 		return nil
 	}
-	// The router only reports per-node firmware when an update is pending.
+	// The router only reports per-unit firmware when an update is pending.
 	withFirmware := slices.ContainsFunc(st.Peers, func(p mesh.Peer) bool { return statusPeerFirmware(st.Updates, p) != "" })
 
 	fmt.Fprintln(w)
@@ -123,7 +123,7 @@ func statusPrint(w io.Writer, host string, st *status) error {
 	fmt.Fprintln(tw, header)
 	for _, p := range st.Peers {
 		backhaul := ""
-		if p.Role != "router" {
+		if p.Role != amplifi.RoleRouter {
 			backhaul = fmt.Sprintf("%s %d dBm", p.Band, p.RSSI)
 		}
 		row := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s", p.Name, p.Role, p.IP, p.MAC, p.Uptime.Truncate(time.Minute), backhaul)
@@ -135,26 +135,26 @@ func statusPrint(w io.Writer, host string, st *status) error {
 	return tw.Flush()
 }
 
-func statusUpdateNote(fw *device.FirmwareInfo, u *firmware.Versions) string {
+func statusUpdateNote(fw *device.Firmware, u *firmware.Versions) string {
 	if fw.UpgradeVersion != "" && fw.UpgradeVersion != fw.Version {
 		return "  (upgrade available: " + fw.UpgradeVersion + ")"
 	}
-	if u != nil && u.Status != "" {
-		return "  (" + strings.ReplaceAll(u.Status, "_", " ") + ")"
+	if u != nil && u.State != "" {
+		return "  (" + fwWord(string(u.State)) + ")"
 	}
 	return ""
 }
 
-func statusInternetLine(in *device.InternetStatus) string {
-	line := "IPv4 " + statusWord(in.StatusText, in.ReasonText)
-	if in.IPv6StatusText != "" {
-		line += ", IPv6 " + statusWord(in.IPv6StatusText, in.IPv6ReasonText)
+func statusInternetLine(in *device.InternetCheck) string {
+	line := "IPv4 " + statusWord(in.HealthText, in.ReasonText)
+	if in.IPv6HealthText != "" {
+		line += ", IPv6 " + statusWord(in.IPv6HealthText, in.IPv6ReasonText)
 	}
 	if in.ISP != "" {
 		line += ", ISP " + in.ISP
 	}
 	if in.LinkSpeed > 0 {
-		line += fmt.Sprintf(", link %d Mbit/s", in.LinkSpeed)
+		line += fmt.Sprintf(", link speed %d", in.LinkSpeed)
 	}
 	return line
 }
@@ -183,14 +183,12 @@ func statusPeerFirmware(u *firmware.Versions, p mesh.Peer) string {
 	if u == nil {
 		return ""
 	}
-	for mac, n := range u.Nodes {
-		if !strings.EqualFold(mac, p.MAC.String()) {
-			continue
-		}
-		if n.Upgrade.Version != "" && n.Upgrade.Version != n.Current.Version {
-			return n.Current.Version + " -> " + n.Upgrade.Version
-		}
-		return n.Current.Version
+	i := slices.IndexFunc(u.Units, func(v firmware.UnitVersion) bool { return v.MAC.Equal(p.MAC) })
+	if i < 0 {
+		return ""
 	}
-	return ""
+	if v := u.Units[i]; v.HasUpgrade() {
+		return v.Current.Version + " -> " + v.Upgrade.Version
+	}
+	return u.Units[i].Current.Version
 }

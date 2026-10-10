@@ -1,6 +1,7 @@
 package wifi
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -44,7 +45,8 @@ const (
 	ifRouterSteering = "12"
 )
 
-// Radio is one radio of the unit. Channel -1 (or 0) means automatic.
+// Radio is one radio of the unit. Channel ChannelAuto (or 0) means
+// automatic.
 type Radio struct {
 	Name             string         `json:"name"`
 	Device           string         `json:"device"`
@@ -52,8 +54,8 @@ type Radio struct {
 	Up               bool           `json:"up"`
 	Band             string         `json:"band"`
 	Mode             string         `json:"mode"`
-	Channel          int64          `json:"channel"`
-	RuntimeChannel   int64          `json:"runtime_channel"`
+	Channel          int            `json:"channel"`
+	RuntimeChannel   int            `json:"runtime_channel"`
 	Bandwidth        Bandwidth      `json:"bandwidth"`
 	MaxBandwidth     Bandwidth      `json:"max_bandwidth"`
 	RuntimeBandwidth Bandwidth      `json:"runtime_bandwidth"`
@@ -95,8 +97,8 @@ func parseRadios(m map[string]any) []Radio {
 			Up:               rpc.Bool(r, radioUp),
 			Band:             rpc.Name(rpc.BandNames, r, radioBand),
 			Mode:             rpc.Name(modeNames, r, radioMode),
-			Channel:          rpc.Int(r, radioChannel),
-			RuntimeChannel:   rpc.Int(r, radioRuntimeChannel),
+			Channel:          int(rpc.Int(r, radioChannel)),
+			RuntimeChannel:   int(rpc.Int(r, radioRuntimeChannel)),
 			Bandwidth:        Bandwidth(rpc.Int(r, radioBandwidth)),
 			MaxBandwidth:     Bandwidth(rpc.Int(r, radioMaxBandwidth)),
 			RuntimeBandwidth: Bandwidth(rpc.Int(r, radioRuntimeBandwidth)),
@@ -226,8 +228,9 @@ func UpdateInterface(ctx context.Context, c *amplifi.Client, key string, u Inter
 	return nil
 }
 
-// Channels lists the channels the unit can use (Device.GetWifiChannels).
-func Channels(ctx context.Context, c *amplifi.Client) ([]int64, error) {
+// AllowedChannels lists the channels the unit can use
+// (Device.GetWifiChannels).
+func AllowedChannels(ctx context.Context, c *amplifi.Client) ([]int, error) {
 	v, err := c.Call(ctx, amplifi.IfaceDevice, "GetWifiChannels", nil)
 	if err != nil {
 		return nil, fmt.Errorf("wifi channels: %w", err)
@@ -237,46 +240,75 @@ func Channels(ctx context.Context, c *amplifi.Client) ([]int64, error) {
 
 // ints converts a decoded msgpack list of integers, skipping anything else.
 // A nil or non-list value gives an empty list.
-func ints(v any) []int64 {
+func ints(v any) []int {
 	list, _ := v.([]any)
-	out := make([]int64, 0, len(list))
+	out := make([]int, 0, len(list))
 	for _, item := range list {
 		if n, ok := wire.ToInt64(item); ok {
-			out = append(out, n)
+			out = append(out, int(n))
 		}
 	}
 	return out
 }
 
-// ChannelDetails describes one channel: its frequency, transmit power, width
-// and DFS state.
-type ChannelDetails struct {
+// Channel describes one channel of a band: its frequency, transmit power,
+// width and DFS state. The DFS fields are nil when
+// the unit leaves them out; DFSTime and DFSCACTime are the router's raw
+// values and their units are unconfirmed.
+type Channel struct {
+	Band       string `json:"band"`
+	Number     int    `json:"number"`
+	FreqMHz    int    `json:"freq_mhz"`
+	TxPower    int    `json:"tx_power"`
+	Width      int    `json:"width"`
+	Radar      bool   `json:"radar"`
+	DFSState   *int   `json:"dfs_state,omitempty"`
+	DFSTime    *int   `json:"dfs_time,omitempty"`
+	DFSCACTime *int   `json:"dfs_cac_time,omitempty"`
+}
+
+// channelEntry is one channel as GetWifiChannelsInfo sends it.
+type channelEntry struct {
 	Channel    int  `json:"chan"`
 	Freq       int  `json:"mhz"`
 	Power      int  `json:"tx_power"`
 	Width      int  `json:"width"`
 	Radar      bool `json:"radar"`
-	DFSState   *int `json:"dfs_state,omitempty"`
-	DFSTime    *int `json:"dfs_time,omitempty"`
-	DFSCACTime *int `json:"dfs_cac_time,omitempty"`
+	DFSState   *int `json:"dfs_state"`
+	DFSTime    *int `json:"dfs_time"`
+	DFSCACTime *int `json:"dfs_cac_time"`
 }
 
-// ChannelInfo fetches per-channel details keyed by band
-// (Device.GetWifiChannelsInfo, a JSON answer).
-func ChannelInfo(ctx context.Context, c *amplifi.Client) (map[string][]ChannelDetails, error) {
-	var out map[string][]ChannelDetails
-	if err := rpc.Value(ctx, c, amplifi.IfaceDevice, "GetWifiChannelsInfo", nil, &out); err != nil {
+// Channels fetches the details of every channel (Device.GetWifiChannelsInfo,
+// a JSON answer), sorted by band and channel number.
+func Channels(ctx context.Context, c *amplifi.Client) ([]Channel, error) {
+	var m map[string][]channelEntry
+	if err := rpc.Value(ctx, c, amplifi.IfaceDevice, "GetWifiChannelsInfo", nil, &m); err != nil {
 		return nil, fmt.Errorf("wifi channel info: %w", err)
 	}
-	if out == nil {
-		out = map[string][]ChannelDetails{}
-	}
-	for band, list := range out {
-		if list == nil {
-			out[band] = []ChannelDetails{}
+	return channelList(m), nil
+}
+
+// channelList flattens channels keyed by band, as the unit names the band.
+func channelList(m map[string][]channelEntry) []Channel {
+	out := []Channel{}
+	for band, list := range m {
+		for _, e := range list {
+			out = append(out, Channel{
+				Band:       band,
+				Number:     e.Channel,
+				FreqMHz:    e.Freq,
+				TxPower:    e.Power,
+				Width:      e.Width,
+				Radar:      e.Radar,
+				DFSState:   e.DFSState,
+				DFSTime:    e.DFSTime,
+				DFSCACTime: e.DFSCACTime,
+			})
 		}
 	}
-	return out, nil
+	slices.SortFunc(out, func(a, b Channel) int { return cmp.Or(cmp.Compare(a.Band, b.Band), cmp.Compare(a.Number, b.Number)) })
+	return out
 }
 
 // Countries lists the country codes the unit supports
@@ -300,10 +332,11 @@ func countryCodes(v any) []string {
 	return codes
 }
 
-// Radar returns the DFS radar events the unit has seen (Device.GetRadarInfo),
-// as the unit reports them. It is an empty map when there are none (the unit
-// answers JSON {}); the shape of a non-empty answer is unknown.
-func Radar(ctx context.Context, c *amplifi.Client) (map[string]any, error) {
+// GetRadar returns the DFS radar events the unit has seen
+// (Device.GetRadarInfo), as the unit reports them. It is an empty map when
+// there are none (the unit answers JSON {}); the shape of a non-empty answer
+// is unknown.
+func GetRadar(ctx context.Context, c *amplifi.Client) (map[string]any, error) {
 	v, err := c.Call(ctx, amplifi.IfaceDevice, "GetRadarInfo", nil)
 	if err != nil {
 		return nil, fmt.Errorf("radar info: %w", err)

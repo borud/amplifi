@@ -15,13 +15,13 @@
 //	}
 //	defer c.Close()
 //
-//	board, err := device.Board(ctx, c)
+//	board, err := device.GetBoard(ctx, c)
 //	peers, err := mesh.Peers(ctx, c)
-//	cfg, err := wifi.Config(ctx, c)
+//	cfg, err := wifi.GetConfig(ctx, c)
 //
-// The area packages are device, mesh, clients, wifi, network (including DHCP
-// and port forwarding), access, magiclink, firmware and system; discovery
-// finds units on the LAN. Client.Call, CallJSON and Property reach any method
+// The area packages are device, mesh, clients, wifi, network, dhcp,
+// portforward, access, teleport, firmware and system; discovery finds units
+// on the LAN. Client.Call, CallJSON and Property reach any method
 // directly, and Client.Events streams the events the unit pushes.
 //
 // The wire protocol is a WebSocket on port 9016 carrying AllJoyn-style JSON

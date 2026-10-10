@@ -60,7 +60,7 @@ Commands:
 status       health summary of a unit and its mesh
 watch        events the unit sends, until Ctrl-C
 device       board, firmware, throughput, MAC addresses, properties, display
-mesh         mesh points, registered units, Ethernet ports, factory reset
+mesh         mesh points, registered units, Ethernet ports, pairing, factory reset
 clients      clients, history, signal, rename, pause and resume
 wifi         networks, guest, IoT, radios, interfaces, channels, scan, WPS
 net          WAN, LAN, interfaces, UPnP, QoS
@@ -70,17 +70,17 @@ access       scheduled access control (parental controls)
 firmware     update check, status and upgrade
 speedtest    speed test, status and history
 iperf        iperf server on the unit
-site         site settings such as time zone and guest limits
+site         mesh-wide settings such as time zone and DFS
 admin        admin password
 support      support bundle
 stats        statistics reset
 homekit      HomeKit service
-magiclink    Teleport remote access
+teleport     Teleport remote access
 reboot       reboot a unit
 raw          any method, property or ubus call
 ```
 
-Each command has `--help`. Read commands print tables, or JSON with `-o json`. Write commands print the changes and ask for confirmation; `-y/--yes` skips the question. Use `--log-level debug` to follow the protocol.
+Each command has `--help`. Read commands print tables, or JSON with `-o json`; a group that lists its items has a `list` subcommand, also called `ls`. Write commands print the changes and ask for confirmation; `-y/--yes` skips the question. A factory reset instead asks you to type the unit name, and only `--yes-really` skips that. Use `--log-level debug` to follow the protocol.
 
 Saved logins are stored in `$XDG_CONFIG_HOME/amplifi/credentials.json`, by default `~/.config/amplifi/credentials.json`, with mode 0600. Each entry holds the unit's name, IP address, MAC address and SRP password hash. The password itself is not stored, but the hash grants the same access, so protect the file like a password. If the admin password changes, run `login` again.
 
@@ -95,14 +95,31 @@ if err != nil {
 }
 defer c.Close()
 
-board, err := device.Board(ctx, c)
+board, err := device.GetBoard(ctx, c)
 peers, err := mesh.Peers(ctx, c)
 
+mac, err := amplifi.ParseMAC("00:00:5e:00:53:10")
+err = clients.SetPaused(ctx, c, mac, true)
+
 // Later, without the password:
-c2, err := amplifi.DialHash(ctx, "192.0.2.1", c.PasswordHash())
+c2, err := amplifi.DialWithHash(ctx, "192.0.2.1", c.PasswordHash())
 ```
 
-For anything without a typed function, `Client.Call`, `CallJSON`, `Property` and `Ubus` reach the router directly, and `Client.Signals` streams its events. `discovery.Scan` finds units on the LAN.
+The functions follow one naming scheme:
+
+```text
+GetX           fetch one value, such as device.GetBoard or wifi.GetConfig
+Xs             list values, such as mesh.Peers or dhcp.StaticLeases
+UpdateX        change the fields set in an XUpdate; nil fields stay as they are
+SetX           replace a value, such as network.SetQoS or clients.SetPaused
+AddX           add an item, returning its ID where the router has none
+DeleteXs       delete items by key
+StartX, StopX  start or stop background work, polled with GetX
+```
+
+Addresses are `netip.Addr` or `netip.Prefix`, MAC addresses `amplifi.MAC`, timestamps `time.Time` and confirmed durations `time.Duration`, which encode as seconds in JSON. Values whose unit is not yet known are plain integers, and their documentation says so.
+
+For anything without a typed function, `Client.Call`, `CallJSON`, `Property` and `Ubus` reach the router directly, and `Client.Events` streams its events. `discovery.Scan` finds units on the LAN.
 
 ## Status
 
@@ -111,8 +128,18 @@ The read commands have been tested against real hardware. The write commands hav
 ## Layout
 
 ```text
-*.go                   session: Dial, Client, Call, Property, Signals, MAC
-<area>/                device, mesh, clients, wifi, network, access, magiclink, firmware, system
+*.go                   session: Dial, Client, Call, Property, Events, MAC, Role
+device/                the unit the session is connected to
+mesh/                  mesh points, registered units, ports, pairing
+clients/               clients on the network
+wifi/                  Wi-Fi networks, radios, channels, scan, WPS
+network/               WAN, LAN, interfaces, UPnP, QoS
+dhcp/                  DHCP pools and static leases
+portforward/           port forwarding rules
+access/                scheduled access control
+teleport/              Teleport remote access
+firmware/              mesh-wide firmware updates
+system/                site, admin password, speed test, iperf, support, HomeKit
 discovery/             UDP discovery on port 10001
 internal/rpc           helpers shared by the area packages
 internal/wire          JSON envelopes and msgpack codec

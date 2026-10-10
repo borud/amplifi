@@ -34,7 +34,7 @@ type fwCheckCmd struct {
 // Run starts an update check.
 func (c *fwCheckCmd) Run(opt *Options) error {
 	return c.session(opt, c.WaitTimeout, func(ctx context.Context, cl *amplifi.Client) error {
-		if err := firmware.CheckForUpdate(ctx, cl); err != nil {
+		if err := firmware.StartCheck(ctx, cl); err != nil {
 			return err
 		}
 		if !c.Wait {
@@ -45,7 +45,7 @@ func (c *fwCheckCmd) Run(opt *Options) error {
 		if _, err := fwWait(ctx, cl, !opt.JSON()); err != nil {
 			return err
 		}
-		v, err := firmware.Updates(ctx, cl)
+		v, err := firmware.GetVersions(ctx, cl)
 		if err != nil {
 			return err
 		}
@@ -60,7 +60,7 @@ type fwAvailableCmd struct {
 // Run lists the available upgrades.
 func (c *fwAvailableCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		v, err := firmware.Updates(ctx, cl)
+		v, err := firmware.GetVersions(ctx, cl)
 		if err != nil {
 			return err
 		}
@@ -73,18 +73,17 @@ func fwPrintVersions(opt *Options, v *firmware.Versions) error {
 		return printJSON(v)
 	}
 
-	fmt.Printf("status: %s\n\n", fwWord(v.Status))
+	fmt.Printf("status: %s\n\n", fwWord(string(v.State)))
 	tw := newTable(os.Stdout)
-	fmt.Fprintln(tw, "MAC\tTYPE\tCURRENT\tUPGRADE\tLAST CHECK")
-	for _, mac := range slices.Sorted(maps.Keys(v.Nodes)) {
-		n := v.Nodes[mac]
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", mac, n.Type, n.Current.Version, fwUpgradeText(n), unixTime(n.LastCheckTime))
+	fmt.Fprintln(tw, "MAC\tROLE\tCURRENT\tUPGRADE\tLAST CHECK")
+	for _, u := range v.Units {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", u.MAC, u.Role, u.Current.Version, fwUpgradeText(u), timeText(u.LastCheck))
 	}
 	return tw.Flush()
 }
 
-// fwUpgradeText describes the upgrade available to a node, if any.
-func fwUpgradeText(n firmware.NodeVersion) string {
+// fwUpgradeText describes the upgrade available to a unit, if any.
+func fwUpgradeText(n firmware.UnitVersion) string {
 	if !n.HasUpgrade() {
 		return "-"
 	}
@@ -111,7 +110,7 @@ type fwStatusCmd struct {
 // Run shows the update status, optionally waiting for it to settle.
 func (c *fwStatusCmd) Run(opt *Options) error {
 	return c.session(opt, c.WaitTimeout, func(ctx context.Context, cl *amplifi.Client) error {
-		get := firmware.Status
+		get := firmware.GetProgress
 		if c.Wait {
 			get = func(ctx context.Context, cl *amplifi.Client) (*firmware.Progress, error) {
 				return fwWait(ctx, cl, !opt.JSON())
@@ -128,17 +127,17 @@ func (c *fwStatusCmd) Run(opt *Options) error {
 // fwWait polls the update status until nothing is in progress, printing
 // each change of status to stderr when progress is set.
 func fwWait(ctx context.Context, cl *amplifi.Client, progress bool) (*firmware.Progress, error) {
-	last := ""
+	var last firmware.State
 	for {
-		p, err := firmware.Status(ctx, cl)
+		p, err := firmware.GetProgress(ctx, cl)
 		if err != nil {
 			return nil, err
 		}
-		if progress && p.Status != last {
-			fmt.Fprintf(os.Stderr, "%s  %s\n", time.Now().Format(time.TimeOnly), fwWord(p.Status))
-			last = p.Status
+		if progress && p.State != last {
+			fmt.Fprintf(os.Stderr, "%s  %s\n", time.Now().Format(time.TimeOnly), fwWord(string(p.State)))
+			last = p.State
 		}
-		if !p.Busy() {
+		if !p.State.Busy() {
 			return p, nil
 		}
 
@@ -153,17 +152,16 @@ func fwPrintProgress(opt *Options, p *firmware.Progress) error {
 		return printJSON(p)
 	}
 
-	fmt.Printf("status: %s\n", fwWord(p.Status))
-	if len(p.Nodes) == 0 {
+	fmt.Printf("status: %s\n", fwWord(string(p.State)))
+	if len(p.Units) == 0 {
 		return nil
 	}
 
 	fmt.Println()
 	tw := newTable(os.Stdout)
-	fmt.Fprintln(tw, "MAC\tTYPE\tCURRENT\tUPGRADE\tCHECK")
-	for _, mac := range slices.Sorted(maps.Keys(p.Nodes)) {
-		n := p.Nodes[mac]
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", mac, n.Info.Type, n.Info.Current.Version, fwUpgradeText(n.Info), fwCheckText(n.Check))
+	fmt.Fprintln(tw, "MAC\tROLE\tCURRENT\tUPGRADE\tCHECK")
+	for _, u := range p.Units {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", u.MAC, u.Role, u.Current.Version, fwUpgradeText(u.UnitVersion), fwCheckText(u.Check))
 	}
 	return tw.Flush()
 }
@@ -178,7 +176,7 @@ func fwCheckText(r firmware.CheckResult) string {
 type fwUpgradeCmd struct {
 	unitFlags   `kong:"embed"`
 	yesFlag     `kong:"embed"`
-	NodeOnly    bool          `kong:"help='upgrade only the unit connected to, not the whole mesh'"`
+	UnitOnly    bool          `kong:"help='upgrade only the unit connected to, not the whole mesh'"`
 	Wait        bool          `kong:"help='follow the upgrade until the units go offline to reboot'"`
 	WaitTimeout time.Duration `kong:"help='maximum time to wait',default='30m'"`
 }
@@ -187,7 +185,7 @@ type fwUpgradeCmd struct {
 // can follow the upgrade afterwards, so it does not use apply.
 func (c *fwUpgradeCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		planned, err := fwPlan(ctx, cl, c.NodeOnly)
+		planned, err := fwPlan(ctx, cl, c.UnitOnly)
 		if err != nil {
 			return err
 		}
@@ -207,15 +205,15 @@ func (c *fwUpgradeCmd) Run(opt *Options) error {
 		wctx, cancel := c.context()
 		defer cancel()
 
-		if c.NodeOnly {
-			if err := firmware.UpgradeUnit(wctx, cl); err != nil {
+		if c.UnitOnly {
+			if err := device.Upgrade(wctx, cl); err != nil {
 				return err
 			}
 			fmt.Printf("upgrade requested on %s; the unit will flash and reboot\n", c.Host)
 			return nil
 		}
 
-		if err := firmware.Upgrade(wctx, cl); err != nil {
+		if err := firmware.StartUpgrade(wctx, cl); err != nil {
 			return err
 		}
 		fmt.Println("upgrade started")
@@ -230,9 +228,9 @@ func (c *fwUpgradeCmd) Run(opt *Options) error {
 }
 
 // fwPlan lists the upgrades that will be applied, one line per unit.
-func fwPlan(ctx context.Context, cl *amplifi.Client, nodeOnly bool) ([]string, error) {
-	if nodeOnly {
-		fw, err := device.Firmware(ctx, cl)
+func fwPlan(ctx context.Context, cl *amplifi.Client, unitOnly bool) ([]string, error) {
+	if unitOnly {
+		fw, err := device.GetFirmware(ctx, cl)
 		if err != nil {
 			return nil, err
 		}
@@ -242,17 +240,16 @@ func fwPlan(ctx context.Context, cl *amplifi.Client, nodeOnly bool) ([]string, e
 		return []string{fmt.Sprintf("this unit: %s -> %s", fw.Version, fw.UpgradeVersion)}, nil
 	}
 
-	v, err := firmware.Updates(ctx, cl)
+	v, err := firmware.GetVersions(ctx, cl)
 	if err != nil {
 		return nil, err
 	}
-	lines := make([]string, 0, len(v.Nodes))
-	for _, mac := range slices.Sorted(maps.Keys(v.Nodes)) {
-		n := v.Nodes[mac]
-		if !n.HasUpgrade() {
+	lines := make([]string, 0, len(v.Units))
+	for _, u := range v.Units {
+		if !u.HasUpgrade() {
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("%s (%s): %s -> %s", mac, n.Type, n.Current.Version, n.Upgrade.Version))
+		lines = append(lines, fmt.Sprintf("%s (%s): %s -> %s", u.MAC, u.Role, u.Current.Version, u.Upgrade.Version))
 	}
 	return lines, nil
 }
@@ -263,7 +260,7 @@ func fwFollow(ctx context.Context, cl *amplifi.Client) error {
 	p, err := fwWait(ctx, cl, true)
 	switch {
 	case err == nil:
-		fmt.Printf("upgrade %s\n", fwWord(p.Status))
+		fmt.Printf("upgrade %s\n", fwWord(string(p.State)))
 		return nil
 	case amplifi.IsRouterError(err), ctx.Err() != nil:
 		return err
@@ -286,7 +283,7 @@ type fwConfigShowCmd struct {
 // formats print them as JSON.
 func (c *fwConfigShowCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		cfg, err := firmware.Config(ctx, cl)
+		cfg, err := firmware.GetConfig(ctx, cl)
 		if err != nil {
 			return err
 		}
@@ -307,7 +304,7 @@ func (c *fwConfigSetCmd) Run(opt *Options) error {
 		return err
 	}
 
-	return apply(opt, &c.unitFlags, c.yesFlag, "change the automatic update settings on "+c.Host+"?", firmware.Config,
+	return apply(opt, &c.unitFlags, c.yesFlag, "change the automatic update settings on "+c.Host+"?", firmware.GetConfig,
 		func(cs *changeSet, cfg map[string]any) writeFunc {
 			for _, k := range slices.Sorted(maps.Keys(changes)) {
 				from := "(unset)"

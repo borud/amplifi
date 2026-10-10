@@ -39,9 +39,9 @@ func TestDecodeSiteAndRedact(t *testing.T) {
 
 func TestSiteUpdateChanges(t *testing.T) {
 	zone, limit, off := "America/Chicago", 5, false
-	got := SiteUpdate{ZoneName: &zone, GuestClientLimit: &limit, WPSFromLCD: &off}.changes()
+	got := SiteUpdate{ZoneName: &zone, FriendClientLimit: &limit, WPSFromLCD: &off}.changes()
 
-	want := map[string]any{siteZoneName: "America/Chicago", siteGuestClientLimit: 5, siteWPSFromLCD: false}
+	want := map[string]any{siteZoneName: "America/Chicago", siteFriendClientLimit: 5, siteWPSFromLCD: false}
 	if len(got) != len(want) {
 		t.Fatalf("changes %v, want %v", got, want)
 	}

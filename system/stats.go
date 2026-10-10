@@ -8,19 +8,20 @@ import (
 	"github.com/borud/amplifi/internal/rpc"
 )
 
-// ResetStatistics clears the unit's throughput statistics (perf) and/or
-// speed test history (speedtest).
-func ResetStatistics(ctx context.Context, c *amplifi.Client, perf, speedtest bool) error {
-	what := make([]string, 0, 2)
-	if perf {
-		what = append(what, "perf")
-	}
-	if speedtest {
-		what = append(what, "speedtest")
-	}
+// ResetThroughputStats clears the unit's throughput statistics.
+func ResetThroughputStats(ctx context.Context, c *amplifi.Client) error {
+	return resetStatistics(ctx, c, "perf")
+}
 
-	if err := rpc.JSON(ctx, c, amplifi.IfaceDevice, "ResetStatistics", what, nil); err != nil {
-		return fmt.Errorf("reset statistics: %w", err)
+// ResetSpeedTestHistory clears the unit's speed test history.
+func ResetSpeedTestHistory(ctx context.Context, c *amplifi.Client) error {
+	return resetStatistics(ctx, c, "speedtest")
+}
+
+// resetStatistics clears one kind of statistics, "perf" or "speedtest".
+func resetStatistics(ctx context.Context, c *amplifi.Client, what string) error {
+	if err := rpc.JSON(ctx, c, amplifi.IfaceDevice, "ResetStatistics", []string{what}, nil); err != nil {
+		return fmt.Errorf("reset %s statistics: %w", what, err)
 	}
 	return nil
 }

@@ -2,7 +2,7 @@ package clients
 
 import (
 	"maps"
-	"net"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -11,13 +11,13 @@ import (
 )
 
 var (
-	clientsTestNode = string([]byte{0x02, 0, 0, 0, 0, 0x01})
+	clientsTestUnit = string([]byte{0x02, 0, 0, 0, 0, 0x01})
 	clientsTestMAC  = string([]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x01})
 )
 
-func TestClientsParseWifiWithNodes(t *testing.T) {
+func TestClientsParseAssociationsWithUnits(t *testing.T) {
 	m := map[string]any{
-		clientsTestNode: map[string]any{
+		clientsTestUnit: map[string]any{
 			"2": map[string]any{
 				"3": map[string]any{
 					clientsTestMAC: map[string]any{
@@ -34,44 +34,44 @@ func TestClientsParseWifiWithNodes(t *testing.T) {
 		},
 	}
 
-	got := parseWifi(m)
+	got := parseAssociations(m)
 	if len(got) != 1 {
 		t.Fatalf("got %d clients, want 1", len(got))
 	}
 	w := got[0]
-	if w.MAC.String() != "aa:bb:cc:dd:ee:01" || w.Node.String() != "02:00:00:00:00:01" {
-		t.Errorf("mac %s node %s", w.MAC, w.Node)
+	if w.MAC.String() != "aa:bb:cc:dd:ee:01" || w.Unit.String() != "02:00:00:00:00:01" {
+		t.Errorf("mac %s unit %s", w.MAC, w.Unit)
 	}
 	if w.Band != "5GHz" || w.Network != "main" || w.Mode != "802.11ac" {
 		t.Errorf("band %q network %q mode %q", w.Band, w.Network, w.Mode)
 	}
-	if w.Signal != -55 || w.RxBitrate != 866 || w.TxBitrate != 433 {
+	if w.Signal != -55 || w.RxBitrate != 866700 || w.TxBitrate != 433300 {
 		t.Errorf("signal %d rx %d tx %d", w.Signal, w.RxBitrate, w.TxBitrate)
 	}
-	if !w.IP.Equal(net.IPv4(192, 0, 2, 42)) || w.HostName != "phone" || w.Description != "Pixel" {
+	if w.IP != netip.MustParseAddr("192.0.2.42") || w.HostName != "phone" || w.Description != "Pixel" {
 		t.Errorf("ip %s host %q desc %q", w.IP, w.HostName, w.Description)
 	}
 }
 
-func TestClientsParseWifiWithoutNodes(t *testing.T) {
+func TestClientsParseAssociationsWithoutUnits(t *testing.T) {
 	m := map[string]any{
 		"1": map[string]any{
 			"4": map[string]any{clientsTestMAC: map[string]any{"3": int8(40)}},
 		},
 	}
 
-	got := parseWifi(m)
+	got := parseAssociations(m)
 	if len(got) != 1 {
 		t.Fatalf("got %d clients, want 1", len(got))
 	}
-	if got[0].Node != nil || got[0].Band != "2.4GHz" || got[0].Network != "guest" || got[0].Signal != 40 {
+	if got[0].Unit != nil || got[0].Band != "2.4GHz" || got[0].Network != "guest" || got[0].Signal != 40 {
 		t.Errorf("unexpected %+v", got[0])
 	}
 }
 
 func TestClientsParseSignals(t *testing.T) {
 	m := map[string]any{
-		clientsTestNode: map[string]any{
+		clientsTestUnit: map[string]any{
 			"2": map[string]any{"3": map[string]any{clientsTestMAC: uint8(70), "short": uint8(1)}},
 		},
 	}
@@ -80,7 +80,7 @@ func TestClientsParseSignals(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d signals, want 1", len(got))
 	}
-	if got[0].Quality != 70 || got[0].Band != "5GHz" || got[0].Node.String() != "02:00:00:00:00:01" {
+	if got[0].Quality != 70 || got[0].Band != "5GHz" || got[0].Unit.String() != "02:00:00:00:00:01" {
 		t.Errorf("unexpected %+v", got[0])
 	}
 }
@@ -98,14 +98,14 @@ func TestClientsCurrent(t *testing.T) {
 		"aa:bb:cc:dd:ee:05": {"fingerprint": map[string]any{"device_id": float64(1)}},
 	}
 	router := amplifi.MAC{0x02, 0, 0, 0, 0, 0xff}
-	wifi := []WifiClient{
-		{MAC: amplifi.MAC(clientsTestMAC), Node: amplifi.MAC(clientsTestNode), Band: "5GHz", Network: "main"},
-		{MAC: amplifi.MAC{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x05}, Node: router, Band: "2.4GHz", Network: "iot"},
-		{MAC: amplifi.MAC{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x06}, Node: router, Band: "2.4GHz", Network: "guest", HostName: "tv"},
+	assocs := []Association{
+		{MAC: amplifi.MAC(clientsTestMAC), Unit: amplifi.MAC(clientsTestUnit), Band: "5GHz", Network: "main"},
+		{MAC: amplifi.MAC{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x05}, Unit: router, Band: "2.4GHz", Network: "iot"},
+		{MAC: amplifi.MAC{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x06}, Unit: router, Band: "2.4GHz", Network: "guest", HostName: "tv"},
 	}
-	nodes := map[string]string{"02:00:00:00:00:01": "hall", "": "router"}
+	units := map[string]string{"02:00:00:00:00:01": "hall", "": "router"}
 
-	got := current(info, custom, wifi, nodes)
+	got := current(info, custom, assocs, units)
 	if len(got) != 6 {
 		t.Fatalf("got %d clients, want 6: %+v", len(got), got)
 	}
@@ -115,15 +115,15 @@ func TestClientsCurrent(t *testing.T) {
 	}
 
 	cam := byMAC["aa:bb:cc:dd:ee:01"]
-	if cam.Name != "Camera" || cam.HostName != "cam1" || cam.Connection != "5GHz" || cam.NodeName != "hall" || !cam.Online {
+	if cam.Name != "Camera" || cam.HostName != "cam1" || cam.Connection != "5GHz" || cam.UnitName != "hall" || !cam.Online {
 		t.Errorf("cam: %+v", cam)
 	}
-	if !cam.IP.Equal(net.IPv4(192, 0, 2, 22)) || cam.IconID != 3900 || cam.Custom == nil || cam.Wifi == nil {
-		t.Errorf("cam: ip %s icon %d custom %v wifi %v", cam.IP, cam.IconID, cam.Custom, cam.Wifi)
+	if cam.IP != netip.MustParseAddr("192.0.2.22") || cam.IconID != 3900 || cam.Custom == nil || cam.WiFi == nil {
+		t.Errorf("cam: ip %s icon %d custom %v wifi %v", cam.IP, cam.IconID, cam.Custom, cam.WiFi)
 	}
 
 	mac := byMAC["aa:bb:cc:dd:ee:02"]
-	if mac.Name != "laptop" || mac.Connection != "wired" || mac.Port == nil || *mac.Port != 0 || mac.NodeName != "router" {
+	if mac.Name != "laptop" || mac.Connection != "wired" || mac.Port == nil || *mac.Port != 0 || mac.UnitName != "router" {
 		t.Errorf("laptop: %+v", mac)
 	}
 
@@ -132,12 +132,12 @@ func TestClientsCurrent(t *testing.T) {
 		t.Errorf("bare wired: %+v", bare)
 	}
 
-	if n := byMAC["aa:bb:cc:dd:ee:04"]; n.Connection != "wifi" || n.NodeName != "router" {
+	if n := byMAC["aa:bb:cc:dd:ee:04"]; n.Connection != "wifi" || n.UnitName != "router" {
 		t.Errorf("unknown peer: %+v", n)
 	}
 
 	iot := byMAC["aa:bb:cc:dd:ee:05"]
-	if iot.Connection != "2.4GHz" || iot.Node != nil || iot.NodeName != "router" || iot.Custom == nil {
+	if iot.Connection != "2.4GHz" || iot.Unit != nil || iot.UnitName != "router" || iot.Custom == nil {
 		t.Errorf("router client: %+v", iot)
 	}
 
@@ -189,7 +189,7 @@ func TestClientsHistory(t *testing.T) {
 	}
 
 	wired := byMAC["aa:bb:cc:dd:ee:01"]
-	if wired.Name != "aa:bb:cc:dd:ee:01" || wired.Connection != "wired" || wired.Online || wired.NodeName != "" {
+	if wired.Name != "aa:bb:cc:dd:ee:01" || wired.Connection != "wired" || wired.Online || wired.UnitName != "" {
 		t.Errorf("wired: %+v", wired)
 	}
 	if !wired.LastSeen.Equal(time.Unix(1791593475, 0)) || wired.TimesSeen != 1212460 {
@@ -203,19 +203,19 @@ func TestClientsHistory(t *testing.T) {
 	}
 }
 
-func TestClientsNodeName(t *testing.T) {
-	nodes := map[string]string{"02:00:00:00:00:01": "hall", "": "router"}
+func TestClientsUnitName(t *testing.T) {
+	units := map[string]string{"02:00:00:00:00:01": "hall", "": "router"}
 	tests := []struct {
-		node amplifi.MAC
+		unit amplifi.MAC
 		want string
 	}{
-		{amplifi.MAC(clientsTestNode), "hall"},
+		{amplifi.MAC(clientsTestUnit), "hall"},
 		{amplifi.MAC{0x00, 0x00, 0x5e, 0x00, 0x53, 0x0c}, "router"},
 		{nil, "router"},
 	}
 	for _, tt := range tests {
-		if got := nodeName(nodes, tt.node); got != tt.want {
-			t.Errorf("nodeName(%s) = %q, want %q", tt.node, got, tt.want)
+		if got := unitName(units, tt.unit); got != tt.want {
+			t.Errorf("unitName(%s) = %q, want %q", tt.unit, got, tt.want)
 		}
 	}
 }

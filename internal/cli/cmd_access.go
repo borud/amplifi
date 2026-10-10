@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/borud/amplifi"
 	"github.com/borud/amplifi/access"
@@ -17,12 +17,12 @@ import (
 
 type accessCmd struct {
 	Profiles accessProfilesCmd `kong:"cmd,help='access control profiles (groups of clients)'"`
-	Devices  accessDevicesCmd  `kong:"cmd,help='access control device table'"`
+	Clients  accessClientsCmd  `kong:"cmd,help='access control client table'"`
 	Rules    accessRulesCmd    `kong:"cmd,help='blocking schedules of profiles'"`
 }
 
 type accessProfilesCmd struct {
-	List   accessProfilesListCmd   `kong:"cmd,help='list profiles'"`
+	List   accessProfilesListCmd   `kong:"cmd,aliases='ls',help='list profiles'"`
 	Add    accessProfilesAddCmd    `kong:"cmd,help='add a profile'"`
 	Set    accessProfilesSetCmd    `kong:"cmd,help='change the name or clients of a profile'"`
 	Rm     accessProfilesRmCmd     `kong:"cmd,help='delete profiles'"`
@@ -30,15 +30,15 @@ type accessProfilesCmd struct {
 	Resume accessProfilesResumeCmd `kong:"cmd,help='restore internet access for the clients of a profile'"`
 }
 
-type accessDevicesCmd struct {
-	List accessDevicesListCmd `kong:"cmd,help='list device entries'"`
-	Add  accessDevicesAddCmd  `kong:"cmd,help='add a device entry'"`
-	Set  accessDevicesSetCmd  `kong:"cmd,help='change a device entry'"`
-	Rm   accessDevicesRmCmd   `kong:"cmd,help='delete device entries'"`
+type accessClientsCmd struct {
+	List accessClientsListCmd `kong:"cmd,aliases='ls',help='list client entries'"`
+	Add  accessClientsAddCmd  `kong:"cmd,help='add a client entry'"`
+	Set  accessClientsSetCmd  `kong:"cmd,help='change a client entry'"`
+	Rm   accessClientsRmCmd   `kong:"cmd,help='delete client entries'"`
 }
 
 type accessRulesCmd struct {
-	List accessRulesListCmd `kong:"cmd,help='list rules'"`
+	List accessRulesListCmd `kong:"cmd,aliases='ls',help='list rules'"`
 	Add  accessRulesAddCmd  `kong:"cmd,help='add a blocking schedule to a profile'"`
 	Set  accessRulesSetCmd  `kong:"cmd,help='change a rule'"`
 	Rm   accessRulesRmCmd   `kong:"cmd,help='delete rules'"`
@@ -60,9 +60,9 @@ func (c *accessProfilesListCmd) Run(opt *Options) error {
 		}
 
 		w := newTable(os.Stdout)
-		fmt.Fprintln(w, "ID\tNAME\tENABLED\tPAUSED\tDEVICES")
+		fmt.Fprintln(w, "ID\tNAME\tENABLED\tPAUSED\tCLIENTS")
 		for _, p := range profiles {
-			fmt.Fprintf(w, "%s\t%s\t%t\t%t\t%s\n", p.ID, p.Name, p.Enabled, p.Paused, joinMACs(p.Devices))
+			fmt.Fprintf(w, "%s\t%s\t%t\t%t\t%s\n", p.ID, p.Name, p.Enabled, p.Paused, joinMACs(p.Clients))
 		}
 		return w.Flush()
 	})
@@ -72,32 +72,34 @@ type accessProfilesAddCmd struct {
 	unitFlags `kong:"embed"`
 	yesFlag   `kong:"embed"`
 	Name      string   `kong:"arg,help='profile name'"`
-	Device    []string `kong:"help='MAC address of a client to put in the profile (repeatable)'"`
+	Client    []string `kong:"help='MAC address of a client to put in the profile (repeatable)'"`
 	Paused    bool     `kong:"help='add the profile paused'"`
 }
 
 // Run adds a profile.
 func (c *accessProfilesAddCmd) Run(opt *Options) error {
-	devices, err := parseMACs(c.Device)
+	clients, err := parseMACs(c.Client)
 	if err != nil {
 		return err
 	}
+	p := access.Profile{Name: c.Name, Enabled: true, Paused: c.Paused, Clients: clients}
 
-	return apply(opt, &c.unitFlags, c.yesFlag, fmt.Sprintf("add profile %q on %s?", c.Name, c.Host), access.Profiles,
-		func(cs *changeSet, profiles []access.Profile) writeFunc {
-			p := access.Profile{
-				ID:      accessNextProfileID(profiles),
-				Name:    c.Name,
-				Enabled: true,
-				Paused:  c.Paused,
-				Devices: devices,
-			}
-			cs.create("id", p.ID)
-			cs.create("name", p.Name)
-			cs.create("paused", onOff(p.Paused))
-			cs.create("devices", joinMACs(p.Devices))
-			return func(ctx context.Context, cl *amplifi.Client) error { return access.AddProfile(ctx, cl, p) }
-		})
+	var cs changeSet
+	cs.create("name", p.Name)
+	cs.create("paused", onOff(p.Paused))
+	cs.create("clients", joinMACs(p.Clients))
+	ok, err := cs.approve(c.yesFlag, fmt.Sprintf("add profile %q on %s?", c.Name, c.Host))
+	if err != nil || !ok {
+		return err
+	}
+	return c.commit(opt, func(ctx context.Context, cl *amplifi.Client) error {
+		id, err := access.AddProfile(ctx, cl, p)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("added profile %s\n", id)
+		return nil
+	})
 }
 
 type accessProfilesSetCmd struct {
@@ -105,17 +107,17 @@ type accessProfilesSetCmd struct {
 	yesFlag      `kong:"embed"`
 	Profile      string   `kong:"arg,help='profile ID or name'"`
 	Name         *string  `kong:"help='new name'"`
-	AddDevice    []string `kong:"help='MAC address of a client to add (repeatable)'"`
-	RemoveDevice []string `kong:"help='MAC address of a client to remove (repeatable)'"`
+	AddClient    []string `kong:"help='MAC address of a client to add (repeatable)'"`
+	RemoveClient []string `kong:"help='MAC address of a client to remove (repeatable)'"`
 }
 
 // Run changes a profile.
 func (c *accessProfilesSetCmd) Run(opt *Options) error {
-	add, err := parseMACs(c.AddDevice)
+	add, err := parseMACs(c.AddClient)
 	if err != nil {
 		return err
 	}
-	remove, err := parseMACs(c.RemoveDevice)
+	remove, err := parseMACs(c.RemoveClient)
 	if err != nil {
 		return err
 	}
@@ -124,8 +126,8 @@ func (c *accessProfilesSetCmd) Run(opt *Options) error {
 		func(cs *changeSet, p access.Profile) writeFunc {
 			u := access.ProfileUpdate{Name: cs.text("name", c.Name, p.Name)}
 			if len(add) > 0 || len(remove) > 0 {
-				u.Devices = accessEditMACs(p.Devices, add, remove)
-				cs.add("devices", joinMACs(p.Devices), joinMACs(u.Devices))
+				u.Clients = accessEditMACs(p.Clients, add, remove)
+				cs.add("clients", joinMACs(p.Clients), joinMACs(u.Clients))
 			}
 			return func(ctx context.Context, cl *amplifi.Client) error { return access.UpdateProfile(ctx, cl, p.ID, u) }
 		})
@@ -148,7 +150,7 @@ func (c *accessProfilesRmCmd) Run(opt *Options) error {
 					cs.fail("profile", err)
 					continue
 				}
-				cs.remove("profile "+p.ID, fmt.Sprintf("%q (devices %s)", p.Name, joinMACs(p.Devices)))
+				cs.remove("profile "+p.ID, fmt.Sprintf("%q (clients %s)", p.Name, joinMACs(p.Clients)))
 				ids = append(ids, p.ID)
 			}
 			return func(ctx context.Context, cl *amplifi.Client) error { return access.DeleteProfiles(ctx, cl, ids...) }
@@ -181,45 +183,47 @@ func accessSetPaused(opt *Options, u *unitFlags, y yesFlag, ref string, paused b
 	return apply(opt, u, y, fmt.Sprintf("change profile %s on %s?", ref, u.Host), accessProfileReader(ref),
 		func(cs *changeSet, p access.Profile) writeFunc {
 			cs.add("paused", onOff(p.Paused), onOff(paused))
-			return func(ctx context.Context, cl *amplifi.Client) error { return access.PauseProfile(ctx, cl, p.ID, paused) }
+			return func(ctx context.Context, cl *amplifi.Client) error {
+				return access.SetProfilePaused(ctx, cl, p.ID, paused)
+			}
 		})
 }
 
-type accessDevicesListCmd struct {
+type accessClientsListCmd struct {
 	unitFlags `kong:"embed"`
 }
 
-// Run lists the device entries.
-func (c *accessDevicesListCmd) Run(opt *Options) error {
+// Run lists the client entries.
+func (c *accessClientsListCmd) Run(opt *Options) error {
 	return c.session(opt, 0, func(ctx context.Context, cl *amplifi.Client) error {
-		devices, err := access.Devices(ctx, cl)
+		clients, err := access.Clients(ctx, cl)
 		if err != nil {
 			return err
 		}
 		if opt.JSON() {
-			return printJSON(devices)
+			return printJSON(clients)
 		}
 
 		w := newTable(os.Stdout)
 		fmt.Fprintln(w, "MAC\tNAME\tTAG\tDSCP")
-		for _, d := range devices {
+		for _, d := range clients {
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", d.MAC, d.Name, intOrDash(d.Tag), accessDSCPName(d.DSCP))
 		}
 		return w.Flush()
 	})
 }
 
-type accessDevicesAddCmd struct {
+type accessClientsAddCmd struct {
 	unitFlags `kong:"embed"`
 	yesFlag   `kong:"embed"`
 	MAC       string `kong:"arg,name='mac',help='client MAC address'"`
-	Name      string `kong:"help='device name'"`
+	Name      string `kong:"help='client name'"`
 	DSCP      string `kong:"name='dscp',help='traffic priority: none, streaming, gaming or a DSCP number'"`
 	Tag       *int   `kong:"help='tag'"`
 }
 
-// Run adds a device entry.
-func (c *accessDevicesAddCmd) Run(opt *Options) error {
+// Run adds a client entry.
+func (c *accessClientsAddCmd) Run(opt *Options) error {
 	mac, err := amplifi.ParseMAC(c.MAC)
 	if err != nil {
 		return err
@@ -228,31 +232,31 @@ func (c *accessDevicesAddCmd) Run(opt *Options) error {
 	if err != nil {
 		return err
 	}
-	d := access.Device{MAC: mac, Name: c.Name, Tag: c.Tag, DSCP: dscp}
+	d := access.Client{MAC: mac, Name: c.Name, Tag: c.Tag, DSCP: dscp}
 
 	var cs changeSet
 	cs.create("mac", d.MAC.String())
 	cs.create("name", d.Name)
 	cs.create("tag", intOrDash(d.Tag))
 	cs.create("dscp", accessDSCPName(d.DSCP))
-	ok, err := cs.approve(c.yesFlag, "add this device entry on "+c.Host+"?")
+	ok, err := cs.approve(c.yesFlag, "add this client entry on "+c.Host+"?")
 	if err != nil || !ok {
 		return err
 	}
-	return c.commit(opt, func(ctx context.Context, cl *amplifi.Client) error { return access.AddDevice(ctx, cl, d) })
+	return c.commit(opt, func(ctx context.Context, cl *amplifi.Client) error { return access.AddClient(ctx, cl, d) })
 }
 
-type accessDevicesSetCmd struct {
+type accessClientsSetCmd struct {
 	unitFlags `kong:"embed"`
 	yesFlag   `kong:"embed"`
 	MAC       string  `kong:"arg,name='mac',help='client MAC address'"`
-	Name      *string `kong:"help='device name'"`
+	Name      *string `kong:"help='client name'"`
 	DSCP      string  `kong:"name='dscp',help='traffic priority: none, streaming, gaming or a DSCP number'"`
 	Tag       *int    `kong:"help='tag'"`
 }
 
-// Run changes a device entry.
-func (c *accessDevicesSetCmd) Run(opt *Options) error {
+// Run changes a client entry.
+func (c *accessClientsSetCmd) Run(opt *Options) error {
 	mac, err := amplifi.ParseMAC(c.MAC)
 	if err != nil {
 		return err
@@ -262,15 +266,15 @@ func (c *accessDevicesSetCmd) Run(opt *Options) error {
 		return err
 	}
 
-	read := func(ctx context.Context, cl *amplifi.Client) (access.Device, error) {
-		devices, err := access.Devices(ctx, cl)
+	read := func(ctx context.Context, cl *amplifi.Client) (access.Client, error) {
+		clients, err := access.Clients(ctx, cl)
 		if err != nil {
-			return access.Device{}, err
+			return access.Client{}, err
 		}
-		return findOne(devices, mac.String(), "device entry", func(d access.Device) string { return d.MAC.String() }, nil)
+		return findOne(clients, mac.String(), "client entry", func(d access.Client) string { return d.MAC.String() }, nil)
 	}
-	return apply(opt, &c.unitFlags, c.yesFlag, fmt.Sprintf("change device entry %s on %s?", mac, c.Host), read,
-		func(cs *changeSet, d access.Device) writeFunc {
+	return apply(opt, &c.unitFlags, c.yesFlag, fmt.Sprintf("change client entry %s on %s?", mac, c.Host), read,
+		func(cs *changeSet, d access.Client) writeFunc {
 			cs.text("name", c.Name, d.Name)
 			if c.Tag != nil {
 				cs.add("tag", intOrDash(d.Tag), intOrDash(c.Tag))
@@ -278,27 +282,27 @@ func (c *accessDevicesSetCmd) Run(opt *Options) error {
 			if dscp != nil {
 				cs.add("dscp", accessDSCPName(d.DSCP), accessDSCPName(dscp))
 			}
-			u := access.DeviceUpdate{Name: c.Name, Tag: c.Tag, DSCP: dscp}
-			return func(ctx context.Context, cl *amplifi.Client) error { return access.UpdateDevice(ctx, cl, d.MAC, u) }
+			u := access.ClientUpdate{Name: c.Name, Tag: c.Tag, DSCP: dscp}
+			return func(ctx context.Context, cl *amplifi.Client) error { return access.UpdateClient(ctx, cl, d.MAC, u) }
 		})
 }
 
-type accessDevicesRmCmd struct {
+type accessClientsRmCmd struct {
 	unitFlags `kong:"embed"`
 	yesFlag   `kong:"embed"`
 	MACs      []string `kong:"arg,name='mac',help='client MAC addresses'"`
 }
 
-// Run deletes device entries.
-func (c *accessDevicesRmCmd) Run(opt *Options) error {
+// Run deletes client entries.
+func (c *accessClientsRmCmd) Run(opt *Options) error {
 	macs, err := parseMACs(c.MACs)
 	if err != nil {
 		return err
 	}
 
-	prompt := fmt.Sprintf("delete the device entries for %s on %s?", joinMACs(macs), c.Host)
+	prompt := fmt.Sprintf("delete the client entries for %s on %s?", joinMACs(macs), c.Host)
 	return c.run(opt, c.yesFlag, prompt, func(ctx context.Context, cl *amplifi.Client) error {
-		return access.DeleteDevices(ctx, cl, macs...)
+		return access.DeleteClients(ctx, cl, macs...)
 	})
 }
 
@@ -330,7 +334,7 @@ func (c *accessRulesListCmd) Run(opt *Options) error {
 			if err != nil {
 				return err
 			}
-			rules = slices.DeleteFunc(rules, func(r access.Rule) bool { return r.ProfileID() != p.ID })
+			rules = slices.DeleteFunc(rules, func(r access.Rule) bool { return r.ProfileID != p.ID })
 		}
 
 		if opt.JSON() {
@@ -340,7 +344,7 @@ func (c *accessRulesListCmd) Run(opt *Options) error {
 		w := newTable(os.Stdout)
 		fmt.Fprintln(w, "ID\tPROFILE\tENABLED\tTIME\tDAYS\tDESCRIPTION")
 		for _, r := range rules {
-			fmt.Fprintf(w, "%s\t%s\t%t\t%s\t%s\t%s\n", r.ID, names[r.ProfileID()], r.Enabled, accessWindow(r.StartTime, r.Duration), accessDaysString(r.WeekDays), r.Description)
+			fmt.Fprintf(w, "%s\t%s\t%t\t%s\t%s\t%s\n", r.ID, names[r.ProfileID], r.Enabled, accessWindow(r.Start, r.Duration), accessDaysString(r.WeekDays), r.Description)
 		}
 		return w.Flush()
 	})
@@ -364,11 +368,11 @@ func (c *accessRulesAddCmd) Run(opt *Options) error {
 	if err != nil {
 		return err
 	}
-	duration, err := accessRuleLength(clockText(start), c.End, c.Duration)
+	duration, err := accessRuleLength(start, c.End, c.Duration)
 	if err != nil {
 		return err
 	}
-	if duration == "" {
+	if duration == nil {
 		return errors.New("give --end or --duration")
 	}
 	days, err := accessParseDays(c.Days)
@@ -379,20 +383,26 @@ func (c *accessRulesAddCmd) Run(opt *Options) error {
 	return apply(opt, &c.unitFlags, c.yesFlag, fmt.Sprintf("add this rule to profile %s on %s?", c.Profile, c.Host), accessProfileReader(c.Profile),
 		func(cs *changeSet, p access.Profile) writeFunc {
 			r := access.Rule{
-				ID:          access.NewRuleID(p.ID),
+				ProfileID:   p.ID,
 				Description: c.Description,
 				Enabled:     !c.Disabled,
-				StartTime:   clockText(start),
-				Duration:    duration,
+				Start:       start,
+				Duration:    *duration,
 				WeekDays:    days,
 			}
-			cs.create("id", r.ID)
 			cs.create("profile", fmt.Sprintf("%s %q", p.ID, p.Name))
-			cs.create("time", accessWindow(r.StartTime, r.Duration))
+			cs.create("time", accessWindow(r.Start, r.Duration))
 			cs.create("days", accessDaysString(r.WeekDays))
 			cs.create("enabled", onOff(r.Enabled))
 			cs.create("description", r.Description)
-			return func(ctx context.Context, cl *amplifi.Client) error { return access.AddRule(ctx, cl, r) }
+			return func(ctx context.Context, cl *amplifi.Client) error {
+				id, err := access.AddRule(ctx, cl, r)
+				if err != nil {
+					return err
+				}
+				fmt.Printf("added rule %s\n", id)
+				return nil
+			}
 		})
 }
 
@@ -430,26 +440,28 @@ func (c *accessRulesSetCmd) Run(opt *Options) error {
 func (c *accessRulesSetCmd) update(cs *changeSet, r access.Rule) access.RuleUpdate {
 	var u access.RuleUpdate
 
-	start := r.StartTime
+	start := r.Start
 	if c.Start != "" {
-		m, err := parseClock(c.Start)
+		d, err := parseClock(c.Start)
 		if err != nil {
 			cs.fail("start", err)
 			return u
 		}
-		start = clockText(m)
-		u.StartTime = &start
+		start = d
+		u.Start = &start
 	}
 	duration, err := accessRuleLength(start, c.End, c.Duration)
 	if err != nil {
 		cs.fail("duration", err)
 		return u
 	}
-	if duration != "" {
-		u.Duration = &duration
-	}
-	if u.StartTime != nil || u.Duration != nil {
-		cs.add("time", accessWindow(r.StartTime, r.Duration), accessWindow(start, cmp.Or(duration, r.Duration)))
+	u.Duration = duration
+	if u.Start != nil || u.Duration != nil {
+		next := r.Duration
+		if duration != nil {
+			next = *duration
+		}
+		cs.add("time", accessWindow(r.Start, r.Duration), accessWindow(start, next))
 	}
 
 	if c.Days != "" {
@@ -485,7 +497,7 @@ func (c *accessRulesRmCmd) Run(opt *Options) error {
 					cs.fail("rule", err)
 					continue
 				}
-				cs.remove("rule "+r.ID, "block "+accessWindow(r.StartTime, r.Duration)+" on "+accessDaysString(r.WeekDays))
+				cs.remove("rule "+r.ID, "block "+accessWindow(r.Start, r.Duration)+" on "+accessDaysString(r.WeekDays))
 			}
 			return func(ctx context.Context, cl *amplifi.Client) error { return access.DeleteRules(ctx, cl, c.IDs...) }
 		})
@@ -513,18 +525,6 @@ func accessFindProfile(profiles []access.Profile, ref string) (access.Profile, e
 // accessFindRule finds a rule by ID.
 func accessFindRule(rules []access.Rule, id string) (access.Rule, error) {
 	return findOne(rules, id, "rule", func(r access.Rule) string { return r.ID }, nil)
-}
-
-// accessNextProfileID picks the ID for a new profile: one more than the
-// largest numeric ID in use.
-func accessNextProfileID(profiles []access.Profile) string {
-	next := 1
-	for _, p := range profiles {
-		if n, err := strconv.Atoi(p.ID); err == nil && n >= next {
-			next = n + 1
-		}
-	}
-	return strconv.Itoa(next)
 }
 
 // accessEditMACs returns list with add appended and remove taken out,
@@ -575,61 +575,59 @@ func accessDSCPName(p *access.DSCP) string {
 	return strconv.Itoa(int(*p))
 }
 
-// accessDurationMinutes parses a rule duration, "HH:MM" up to 24:00.
-func accessDurationMinutes(s string) (int, error) {
+// accessParseDuration parses a rule duration, HH:MM from 00:01 to 24:00.
+func accessParseDuration(s string) (time.Duration, error) {
 	if s == "24:00" {
-		return 24 * 60, nil
+		return 24 * time.Hour, nil
 	}
-	return parseClock(s)
+	d, err := parseClock(s)
+	if err != nil {
+		return 0, err
+	}
+	if d == 0 {
+		return 0, fmt.Errorf("bad duration %q: want 00:01 to 24:00", s)
+	}
+	return d, nil
 }
 
-// accessRuleLength returns the rule duration ("HH:MM") from --end or
-// --duration, or "" if neither is set.
-func accessRuleLength(start, end, duration string) (string, error) {
+// accessRuleLength returns the rule duration from --end or --duration, or
+// nil if neither is set.
+func accessRuleLength(start time.Duration, end, duration string) (*time.Duration, error) {
 	if duration != "" {
-		m, err := accessDurationMinutes(duration)
+		d, err := accessParseDuration(duration)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
-		if m == 0 {
-			return "", fmt.Errorf("bad duration %q: want 00:01 to 24:00", duration)
-		}
-		return clockText(m), nil
+		return &d, nil
 	}
 	if end == "" {
-		return "", nil
+		return nil, nil
 	}
 
-	s, err := parseClock(start)
-	if err != nil {
-		return "", err
-	}
 	e, err := parseClock(end)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	m := (e - s + 24*60) % (24 * 60)
-	if m == 0 {
-		m = 24 * 60
+	d := (e - start + 24*time.Hour) % (24 * time.Hour)
+	if d == 0 {
+		d = 24 * time.Hour
 	}
-	return clockText(m), nil
+	return &d, nil
 }
 
 // accessWindow formats a start time and duration as "HH:MM-HH:MM".
-func accessWindow(start, duration string) string {
-	s, serr := parseClock(start)
-	d, derr := accessDurationMinutes(duration)
-	if serr != nil || derr != nil {
-		return start + "+" + duration
-	}
-	return clockText(s) + "-" + clockText((s+d)%(24*60))
+func accessWindow(start, duration time.Duration) string {
+	return clockText(start) + "-" + clockText((start+duration)%(24*time.Hour))
 }
 
-var accessDayNames = []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+// accessWeek lists the week days Monday first.
+var accessWeek = []time.Weekday{
+	time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday, time.Saturday, time.Sunday,
+}
 
-// accessParseDays parses a day list such as "mon-fri", "sat,sun", "1,3,5",
-// "weekdays", "weekend" or "all" into weekday numbers 1 (Monday) to 7.
-func accessParseDays(s string) ([]int, error) {
+// accessParseDays parses a day list such as "mon-fri", "sat,sun", "1,3,5"
+// (1 is Monday), "weekdays", "weekend" or "all", Monday first.
+func accessParseDays(s string) ([]time.Weekday, error) {
 	set := map[int]bool{}
 	for part := range strings.SplitSeq(strings.ToLower(s), ",") {
 		part = strings.TrimSpace(part)
@@ -661,28 +659,35 @@ func accessParseDays(s string) ([]int, error) {
 		}
 	}
 
-	return slices.Sorted(maps.Keys(set)), nil
+	days := make([]time.Weekday, 0, len(set))
+	for _, i := range slices.Sorted(maps.Keys(set)) {
+		days = append(days, accessWeek[i])
+	}
+	return days, nil
 }
 
+// accessDay parses a day name or number (1 is Monday) into an index of
+// accessWeek.
 func accessDay(s string) (int, error) {
-	if i := slices.Index(accessDayNames, s); i >= 0 {
-		return i + 1, nil
+	if i := slices.IndexFunc(accessWeek, func(d time.Weekday) bool { return accessDayName(d) == s }); i >= 0 {
+		return i, nil
 	}
 	n, err := strconv.Atoi(s)
 	if err != nil || n < 1 || n > 7 {
 		return 0, fmt.Errorf("bad day %q: want mon..sun or 1..7", s)
 	}
-	return n, nil
+	return n - 1, nil
 }
 
-func accessDaysString(days []int) string {
+// accessDayName is the three-letter lowercase name of d.
+func accessDayName(d time.Weekday) string {
+	return strings.ToLower(d.String()[:3])
+}
+
+func accessDaysString(days []time.Weekday) string {
 	names := make([]string, 0, len(days))
 	for _, d := range days {
-		if d < 1 || d > 7 {
-			names = append(names, strconv.Itoa(d))
-			continue
-		}
-		names = append(names, accessDayNames[d-1])
+		names = append(names, accessDayName(d))
 	}
 	return orDash(strings.Join(names, ","))
 }
