@@ -14,3 +14,6 @@ require (
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 )
+
+// Withdrawn: published with history that has since been rewritten.
+retract [v0.1.0, v0.1.1]
