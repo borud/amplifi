@@ -75,3 +75,27 @@ jobs:
             --title "${tag}" \
             --notes-file notes.md \
             "${flags[@]}"
+
+      - name: Check out Homebrew tap
+        if: ${{ !contains(github.ref_name, '-') }}
+        uses: actions/checkout@v5
+        with:
+          repository: borud/homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          path: homebrew-tap
+
+      - name: Update Homebrew formula
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          scripts/homebrew-formula.sh "${tag}" dist/SHA256SUMS > homebrew-tap/Formula/amplifi.rb
+          cd homebrew-tap
+          git add Formula/amplifi.rb
+          if git diff --cached --quiet; then
+            echo "formula already up to date"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "amplifi ${tag}"
+          git push

@@ -6,13 +6,19 @@ A unit is any AmpliFi box. The router is the unit connected to the internet; the
 
 ## Install
 
-Download a tarball for macOS or Linux (amd64 or arm64), or a `.deb`, from the [releases page](https://github.com/borud/amplifi/releases), then check it against `SHA256SUMS`:
+With Homebrew (macOS or Linux):
+
+```sh
+brew install borud/tap/amplifi
+```
+
+Or download a tarball for macOS or Linux (amd64 or arm64), or a `.deb`, from the [releases page](https://github.com/borud/amplifi/releases), then check it against `SHA256SUMS`:
 
 ```sh
 sudo dpkg -i amplifi_*_amd64.deb   # Debian, Ubuntu, Raspberry Pi OS
 ```
 
-The macOS binaries are not signed. If you downloaded one in a browser, clear the quarantine flag before running it:
+The macOS binaries are not signed. If you downloaded one in a browser rather than through Homebrew, clear the quarantine flag before running it:
 
 ```sh
 xattr -d com.apple.quarantine amplifi
@@ -153,7 +159,7 @@ cmd/amplifi            CLI entry point
 
 ## Releasing
 
-Push a version tag. The release workflow runs the checks and tests, builds the tarballs, `.deb` packages and `SHA256SUMS` with `make dist`, and publishes a GitHub release listing the commits since the previous tag. Tags with a suffix, such as `v1.2.0-rc.1`, become pre-releases.
+Push a version tag. The release workflow runs the checks and tests, builds the tarballs, `.deb` packages and `SHA256SUMS` with `make dist`, publishes a GitHub release listing the commits since the previous tag, and updates the formula in [borud/homebrew-tap](https://github.com/borud/homebrew-tap). Tags with a suffix, such as `v1.2.0-rc.1`, become pre-releases and leave the formula alone.
 
 ```sh
 git tag -a v1.2.0 -m "v1.2.0"
