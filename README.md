@@ -1,5 +1,7 @@
 # amplifi
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/borud/amplifi.svg)](https://pkg.go.dev/github.com/borud/amplifi)
+
 A Go library and CLI for Ubiquiti AmpliFi routers over their local control protocol, without a cloud account.
 
 A unit is any AmpliFi box. The router is the unit connected to the internet; the other units are mesh points. A client is a device on the network.
@@ -92,7 +94,7 @@ Saved logins are stored in `$XDG_CONFIG_HOME/amplifi/credentials.json`, by defau
 
 ## Library
 
-The root package holds the session. Each functional area is its own package whose functions take the client:
+API documentation is on [pkg.go.dev](https://pkg.go.dev/github.com/borud/amplifi). The root package holds the session. Each functional area is its own package whose functions take the client:
 
 ```go
 c, err := amplifi.Dial(ctx, "192.0.2.1", password)
