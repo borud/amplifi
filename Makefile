@@ -63,7 +63,7 @@ package: build-release
 	@for arch in $(ARCHITECTURES); do \
 		echo "*** packaging $(COMPONENT) $(PACKAGE_VERSION) ($$arch)" && \
 		mkdir -p bin/deb && cp bin/$(COMPONENT)-$$arch-linux bin/deb/$(COMPONENT) && \
-		GOARCH=$$arch nfpm pkg --packager deb --config deb/nfpm.yaml --target dist/ || exit 1; \
+		GOARCH=$$arch nfpm pkg --packager deb --config deb/nfpm.yaml --target dist/$(COMPONENT)_$(PACKAGE_VERSION)_$$arch.deb || exit 1; \
 	done
 
 # Build a tarball per OS and architecture into dist/.
